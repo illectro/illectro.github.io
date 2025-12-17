@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LFR (A-N Radio Range) Navigation Simulator</title>
+    <style>
+        body { margin: 0; background: #000; color: #0f0; font-family: monospace; text-align: center; }
+        canvas { background: #111; display: block; margin: 20px auto; border: 2px solid #0f0; }
+        #info { font-size: 24px; margin: 10px; }
+        #instructions { max-width: 800px; margin: 20px auto; font-size: 18px; }
+    </style>
+</head>
+<body>
+    <h1>Low Frequency Radio Range (A-N) Simulator</h1>
+    <div id="info">Heading: <span id="heading">0</span>° | Fuel: <span id="fuel">100</span>% | Dist: <span id="distance">1000</span> </div>
+    <div id="debug">GainA: <span id="gain_a">0</span> | GainN: <span id="gain_n">0</span> | Difficulty: <span id="difficulty">0</span></div> 
+    <canvas id="canvas" width="600" height="600"></canvas>
+    <div id="instructions">
+        <p><strong>Controls:</strong> Left Arrow (←) or A = turn left | Right Arrow (→) or D = turn right</p>
+        <p><strong>Goal:</strong> Fly towards the radio beacon at the center of the map using only audio cues.</p>
+        <p>You will hear overlapping Morse code: "A" (· —) in some sectors, "N" (— ·) in others.<br>
+        When perfectly on one of the four equisignal beams, the A and N overlap exactly, producing a steady continuous tone.<br>
+        If you hear distinct "dit-dah" (A) you are in the A zone – turn accordingly.<br>
+        If you hear distinct "dah-dit" (N) you are in the N zone.<br>
+        Find and follow the steady tone to reach the beacon.</p>
+        <p>Fuel decreases over time. Reach the beacon (get very close) before fuel runs out!</p>
+        <p>Click the page first to enable sound (browser requirement).</p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const headingEl = document.getElementById('heading');
+        const fuelEl = document.getElementById('fuel');
+        const distEl = document.getElementById('distance');
+        const gainaEl = document.getElementById('gain_a');
+        const gainnEl = document.getElementById('gain_n');
+        const difficultyEl = document.getElementById('difficulty');
+
+        // Game parameters
+        let playerX = 50;          // Player position relative to beacon (beacon at 0,0)
+        let playerY = -200;       // Start south of beacon
+        let playerHeading = 40;  // Degrees, 0 = north, 90 = east, etc.
+        let turnRate = 1;         // Degrees per frame when turning
+        let speed = 0.25;            // Units per frame
+        let fuel = 100;
+        let fuelRate = 0.005;      // % per frame
+        let beaconAngle = 45
+        let difficulty = 0
+        let windX = 0
+        let windY = 0
+        let pause = 100
+
+        // Audio setup
+        let audioCtx = null;
+        let aOsc = null, aGain = null;
+        let nOsc = null, nGain = null;
+        const frequency = 800;    // Tone frequency (Hz)
+        const wpm = 12;           // Morse speed (words per minute)
+        const ditTime = 1200 / wpm; // ms per dit
+        const dashTime = 3 * ditTime;
+        const elementGap = ditTime;
+        const letterGap = 3 * ditTime;
+
+        // Morse patterns (1 = on, 0 = off)
+        const patternA = [1, ditTime, 0, dashTime, 1, dashTime, 0, ditTime];
+
+
+        let lastUpdate = 0;
+        let phase = 0; // ms into the repeating cycle
+
+        function resetState(diff) {
+            // Game parameters
+            difficulty = diff;
+            if(difficulty == 0) {
+                // standard start position
+                playerX = 50;          // Player position relative to beacon (beacon at 0,0)
+                playerY = -200;       // Start south of beacon
+                playerHeading = 40;  // Degrees, 0 = north, 90 = east, etc.
+            } else {
+                // random start position
+                ang = Math.random() * 2 * Math.PI
+                dist = 150 + Math.random() * 100
+                playerX = Math.sin(ang) * dist
+                playerY = Math.cos(ang) * dist
+                playerHeading = (ang + Math.PI * 0.75 + Math.random() * Math.PI * 0.5) * 180/Math.PI
+                if(playerHeading > 360){
+                    playerHeading -= 360
+                }
+            }
+            // wind just gets stronger
+            windSpeed = difficulty * 0.01;
+            windAng = Math.random() * 2 * Math.PI;
+            windX = -Math.sin(ang) * windSpeed;
+            windY = -Math.cos(ang) * windSpeed;
+            fuel = 100;
+            pause = 100;
+        }
+
+        function initAudio() {
+            if (audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            // combined signal
+            aOsc = audioCtx.createOscillator();
+            aOsc.frequency.value = frequency;
+            aGain = audioCtx.createGain();
+            aGain.gain.value = 0;
+            aOsc.connect(aGain).connect(audioCtx.destination);
+            aOsc.start();
+        }
+
+        function updateAudio(deltaMs, a , n) {
+            phase += deltaMs;
+            // Cycle length = pattern repeat time
+            const cycleLength = ( ditTime + dashTime) * 2 ;
+            if (phase >= cycleLength) phase -= cycleLength;
+
+            let t = phase;
+
+            // A signal strength
+            let aOn = false;
+            if (t < dashTime) { aOn = false; }
+            else if (t < dashTime+ditTime) { aOn = true;}
+            else if (t < dashTime+ditTime*2) { aOn = false;}
+            else {aOn = true;}
+            if(aOn) { aGain.gain.value = a;}
+            else {aGain.gain.value = n;}
+
+        }
+
+        function getSignalStrengths() {
+            // Angle from player to beacon
+            let angleToBeacon = Math.atan2(playerY, playerX) + beaconAngle *Math.PI/180;
+            distance = Math.sqrt(playerY*playerY + playerX*playerX)
+            sigPow = 1.1 - (distance/500)
+            if(sigPow > 1) { sigPow = 1; }
+            else if(sigPow < 0.1) {sigPow = 0.1;}
+
+
+            return { a: Math.abs(Math.sin(angleToBeacon)*sigPow), n: Math.abs(Math.cos(angleToBeacon)*sigPow)}
+        }
+
+
+        // Controls
+        const keys = {};
+        window.addEventListener('keydown', e => { keys[e.key] = true; });
+        window.addEventListener('keyup', e => { keys[e.key] = false; });
+        document.body.addEventListener('click', initAudio); // Unlock audio on user gesture
+
+        function gameLoop(timestamp) {
+            if (!lastUpdate) lastUpdate = timestamp;
+            const deltaMs = timestamp - lastUpdate;
+            lastUpdate = timestamp;
+
+            // Input
+            if (keys['ArrowLeft'] || keys['a'] || keys['A']) playerHeading += turnRate;
+            if (keys['ArrowRight'] || keys['d'] || keys['D']) playerHeading -= turnRate;
+            playerHeading = (playerHeading + 360) % 360;
+
+            if(pause == 0){
+                // Movement
+                const rad = playerHeading * Math.PI / 180;
+                playerX += speed * Math.sin(rad) + windX;
+                playerY += speed * Math.cos(rad) + windY;
+
+                // Fuel
+                fuel -= fuelRate;
+                if (fuel < 0) fuel = 0;
+                fuelEl.textContent = Math.round(fuel); 
+            } else {
+                pause -= 1;
+                fuelEl.textContent = "-PAUSE-";
+            }
+
+            // Audio update
+            if (audioCtx) {
+                const { a, n } = getSignalStrengths();
+                updateAudio(deltaMs, a, n);
+                // Adjust intensities based on position
+                if(difficulty <= 1) {
+                    gainaEl.textContent = Math.round(a*100);
+                    gainnEl.textContent = Math.round(n*100);
+                } else {
+                    gainaEl.textContent = "??";
+                    gainnEl.textContent = "??";
+                }
+            }
+
+            // Win / lose
+            const dist = Math.hypot(playerX, playerY);
+            if (dist < 10) {
+                //alert('Success! You reached the beacon.');
+                resetState(difficulty + 1)
+                //resetState(0)
+                //initAudio()
+                //return;
+            }
+            if (fuel <= 0) {
+                alert('Out of fuel! Game over.');
+                //resetState(0)
+                //initAudio()
+                return;
+            }
+
+            // Rendering
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Map grid
+            ctx.strokeStyle = '#333';
+            for (let i = -300; i <= 300; i += 50) {
+                ctx.beginPath();
+                ctx.moveTo(i + 300, 0);
+                ctx.lineTo(i + 300, 600);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(0, i + 300);
+                ctx.lineTo(600, i + 300);
+                ctx.stroke();
+            }
+
+            // Beacon
+            ctx.fillStyle = '#ff0';
+            ctx.beginPath();
+            ctx.arc(300, 300, 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#ff0';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(300, 300);
+            ctx.lineTo(300 + 100 * Math.cos(0), 300 + 100 * Math.sin(0));
+            ctx.moveTo(300, 300);
+            ctx.lineTo(300 + 100 * Math.cos(Math.PI/2), 300 + 100 * Math.sin(Math.PI/2));
+            ctx.moveTo(300, 300);
+            ctx.lineTo(300 + 100 * Math.cos(Math.PI), 300 + 100 * Math.sin(Math.PI));
+            ctx.moveTo(300, 300);
+            ctx.lineTo(300 + 100 * Math.cos(3*Math.PI/2), 300 + 100 * Math.sin(3*Math.PI/2));
+            ctx.stroke();
+
+            // Player aircraft (simple triangle)
+            ctx.save();
+            if(difficulty == 0) {
+                // show location in tutorial only
+                ctx.translate(300 - playerX, 300 - playerY);
+                ctx.fillStyle = '#0ff';
+            } else {
+                // just show heading
+                ctx.translate(300, 300);
+                ctx.fillStyle = '#f0f';
+                ctx.scale(3,3)
+            }
+            ctx.rotate((-playerHeading) * Math.PI / 180);
+            
+            ctx.beginPath();
+            ctx.moveTo(0, -15);
+            ctx.lineTo(-10, 10);
+            ctx.lineTo(0, 5);
+            ctx.lineTo(10, 10);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+
+            // HUD
+            headingEl.textContent = Math.round(playerHeading);
+            if(difficulty <= 1) {
+                distEl.textContent = Math.round(dist);
+            } else {
+                distEl.textContent = "???";
+            }
+            difficultyEl.textContent = difficulty
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
