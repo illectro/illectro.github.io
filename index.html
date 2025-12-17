@@ -269,7 +269,7 @@
             ctx.restore();
 
             // HUD
-            headingEl.textContent = Math.round(playerHeading);
+            headingEl.textContent = (360-Math.round(playerHeading)) % 360;
             if(difficulty <= 1) {
                 distEl.textContent = Math.round(dist);
             } else {
