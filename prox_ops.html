@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LFR (A-N Radio Range) Navigation Simulator</title>
+    <style>
+        body { margin: 0; background: #000; color: #0f0; font-family: monospace; text-align: center; }
+        canvas { background: #111; display: block; margin: 20px auto; border: 2px solid #0f0; }
+        #info { font-size: 24px; margin: 10px; }
+        #instructions { max-width: 800px; margin: 20px auto; font-size: 18px; }
+    </style>
+</head>
+<body>
+    <h1>Proximity Operations</h1>
+    <div id="info">Heading: <span id="heading">0</span>° | Fuel: <span id="fuel">100</span>% | Dist: <span id="distance">1000</span> </div>
+    <div id="info">Position: <span id="playerX">0</span>,<span id="playerY">0</span> | Velocity: <span id="playerVX">0</span>,<span id="playerVY">0</span> </div>
+    <canvas id="canvas" width="1280" height="720"></canvas>
+    <div id="instructions">
+        <p><strong>Controls:</strong> A = turn left | D = turn right | W = Thrust</p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const headingEl = document.getElementById('heading');
+        const fuelEl = document.getElementById('fuel');
+        const distEl = document.getElementById('distance');
+        const pxEl = document.getElementById('playerX');
+        const pyEl = document.getElementById('playerY');
+        const pvxEl = document.getElementById('playerVX');
+        const pvyEl = document.getElementById('playerVY');
+        const positions = []
+       
+
+        // Game parameters
+        let playerX = 500;          // Player position relative to beacon (beacon at 0,0)
+        let playerY = 0;       // Start south of beacon
+        let playerVX = 0;
+        let playerVY = 0;
+        let playerHeading = 40;  // Degrees, 0 = north, 90 = east, etc.
+        let turnRate = 5;         // Degrees per frame when turning
+        let thrust = 0.01;            // Units per frame
+        let fuel = 100;
+        let fuelRate = 0.1;      // % per frame while firing
+        let difficulty = 0;
+        let pause = 100;
+        let n_param = 0.002;
+        let timer = 0;
+
+
+        let lastUpdate = 0;
+        let phase = 0; // ms into the repeating cycle
+
+        function resetState(diff) {
+            // Game parameters
+            difficulty = diff;
+            if(difficulty == 0) {
+                // standard start position
+                playerX = 50;          // Player position relative to beacon (beacon at 0,0)
+                playerY = -20;       // Start south of beacon
+                playerHeading = 40;  // Degrees, 0 = north, 90 = east, etc.
+            } else {
+                // random start position
+                ang = Math.random() * 2 * Math.PI
+                dist = 150 + Math.random() * 100
+                playerX = Math.sin(ang) * dist
+                playerY = Math.cos(ang) * dist
+                playerHeading = (ang + Math.PI * 0.75 + Math.random() * Math.PI * 0.5) * 180/Math.PI
+                if(playerHeading > 360){
+                    playerHeading -= 360
+                }
+            }
+            fuel = 100;
+            pause = 100;
+        }
+
+        // Controls
+        const keys = {};
+        window.addEventListener('keydown', e => { keys[e.key] = true; });
+        window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+        function gameLoop(timestamp) {
+            if (!lastUpdate) lastUpdate = timestamp;
+            const deltaMs = timestamp - lastUpdate;
+            phase += deltaMs
+
+            lastUpdate = timestamp;
+            let accel = 0
+
+            // Input
+            if (keys['ArrowLeft'] || keys['a'] || keys['A']) playerHeading += turnRate;
+            if (keys['ArrowRight'] || keys['d'] || keys['D']) playerHeading -= turnRate;
+            if (keys['ArrowUp']  || keys['w'] || keys['W']) accel = thrust;
+
+
+            // x key switches to practice mode
+            if (keys['x'] || keys['X']) difficulty = -1;
+            if (keys['z'] || keys['Z']) difficulty = 0;
+            playerHeading = (playerHeading + 360) % 360;
+
+            if(pause == 0){
+                // Movement Note that X & Y are swapped from CW equations
+                playerVX += -2*n_param*playerVY
+                playerVY += 3*n_param*n_param * playerY + 2*n_param*playerVX
+
+                playerX += playerVX
+                playerY += playerVY
+
+                if (accel > 0) {
+                    const rad = playerHeading * Math.PI / 180;
+                    playerVX += accel * Math.sin(rad) ;
+                    playerVY += accel * Math.cos(rad) ;
+                }
+
+                // Fuel
+                if(difficulty >= 0) {
+                        if(accel > 0) {
+                        fuel -= fuelRate;
+                        if (fuel < 0) fuel = 0;
+                        fuelEl.textContent = Math.round(fuel); 
+                    }
+                }
+            } else {
+                pause -= 1;
+                fuelEl.textContent = "-PAUSE-";
+            }
+
+            // Win / lose
+            const dist = Math.hypot(playerX, playerY);
+            if (dist < 10) {
+                timer += deltaMs
+                if (timer > 10000) {
+                    alert('Success! You reached the beacon.');
+                    return;
+                }
+                //if(difficulty >= 0) resetState(difficulty + 1)
+            } else {
+                timer = 0
+            }
+            if (fuel <= 0) {
+                alert('Out of fuel! Game over.');
+                return;
+            }
+            // update trail
+            if(phase > 2000) {
+                phase -= 2000;
+                positions.push([ playerX, playerY ]);
+                if(positions.length > 50) {
+                    positions.shift()
+                }
+            }
+
+            // Rendering
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Map grid
+            let cx = canvas.width/2
+            let cy = canvas.height/2
+
+            ctx.strokeStyle = '#333';
+            for (let i = -cx; i <= cx; i += 100) {
+                ctx.beginPath();
+                ctx.moveTo(i + cx, 0);
+                ctx.lineTo(i + cx, canvas.height);
+                ctx.stroke();
+            }
+            for (let i = -cy; i < cy ; i += 100) {
+
+                ctx.beginPath();
+                ctx.moveTo(0, i + cy);
+                ctx.lineTo(canvas.width, i + cy);
+                ctx.stroke();
+            }
+
+            // Beacon
+            ctx.fillStyle = '#ff0';
+            ctx.beginPath();
+            ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#ff0';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(cx + 100 * Math.cos(0), cy + 100 * Math.sin(0));
+            ctx.moveTo(cx, cy);
+            ctx.lineTo( cx + 100 * Math.cos(Math.PI/2), cy + 100 * Math.sin(Math.PI/2));
+            ctx.moveTo( cx, cy);
+            ctx.lineTo(cx + 100 * Math.cos(Math.PI), cy + 100 * Math.sin(Math.PI));
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(cx + 100 * Math.cos(3*Math.PI/2), cy + 100 * Math.sin(3*Math.PI/2));
+            ctx.stroke();
+
+            for (let i = 0; i < positions.length; i++) {
+                const pos = positions[i];
+        
+                // Calculate a radius that fades out (optional, creates a tapered end)
+                const radius = (i / positions.length) * 5; 
+
+                ctx.beginPath();
+                ctx.arc(cx - pos[0], cy - pos[1], radius, 0, Math.PI * 2, false);
+                ctx.fillStyle = '#dd2222'; // Black dots
+                ctx.fill();
+            }
+
+            // Player spacecraft (simple triangle)
+            ctx.save();
+            ctx.translate(cx - playerX, cy - playerY);
+            ctx.fillStyle = '#0ff';
+            ctx.rotate((-playerHeading) * Math.PI / 180);
+            
+            ctx.beginPath();
+            ctx.moveTo(0, -15);
+            ctx.lineTo(-10, 10);
+            ctx.lineTo(0, 5);
+            ctx.lineTo(10, 10);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+
+            // HUD
+            headingEl.textContent = (360-Math.round(playerHeading)) % 360;
+            distEl.textContent = Math.round(dist);
+            pxEl.textContent = Math.round(playerX);
+            pyEl.textContent = Math.round(playerY);
+            pvxEl.textContent = Math.round(playerVX*100);
+            pvyEl.textContent = Math.round(playerVY*100);
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
