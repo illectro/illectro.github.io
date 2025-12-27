@@ -34,8 +34,9 @@
        
 
         // Game parameters
+        let n_param = 0.002;
         let playerX = 500;          // Player position relative to beacon (beacon at 0,0)
-        let playerY = 0;       // Start south of beacon
+        let playerY = -50;       // Start south of beacon
         let playerVX = 0;
         let playerVY = 0;
         let playerHeading = 40;  // Degrees, 0 = north, 90 = east, etc.
@@ -45,7 +46,7 @@
         let fuelRate = 0.1;      // % per frame while firing
         let difficulty = 0;
         let pause = 100;
-        let n_param = 0.002;
+        
         let timer = 0;
 
 
@@ -101,8 +102,8 @@
 
             if(pause == 0){
                 // Movement Note that X & Y are swapped from CW equations
-                playerVX += -2*n_param*playerVY
-                playerVY += 3*n_param*n_param * playerY + 2*n_param*playerVX
+                playerVX += 2*n_param*playerVY
+                playerVY += 3*n_param*n_param * playerY - 2*n_param*playerVX
 
                 playerX += playerVX
                 playerY += playerVY
@@ -221,9 +222,9 @@
             // HUD
             headingEl.textContent = (360-Math.round(playerHeading)) % 360;
             distEl.textContent = Math.round(dist);
-            pxEl.textContent = Math.round(playerX);
+            pxEl.textContent = Math.round(-playerX);
             pyEl.textContent = Math.round(playerY);
-            pvxEl.textContent = Math.round(playerVX*100);
+            pvxEl.textContent = Math.round(-playerVX*100);
             pvyEl.textContent = Math.round(playerVY*100);
 
             requestAnimationFrame(gameLoop);
