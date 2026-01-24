@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aircraft Track Analyzer & Tour Generator</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.js"></script>
+	<script src="https://unpkg.com/numeric@1.2.6/numeric.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.5; }
+        canvas { max-width: 900px; margin: 20px 0; display: block; }
+        label, input, button { margin: 8px 0; display: block; }
+        button { padding: 8px 16px; margin-right: 12px; }
+        #debug { background: #f8f8f8; padding: 12px; border: 1px solid #ddd; max-height: 320px; overflow-y: auto; font-family: monospace; font-size: 0.9em; white-space: pre-wrap; }
+        h2 { margin-top: 2em; }
+    </style>
+</head>
+<body>
+    <h1>Aircraft Track Analyzer & Tour Generator</h1>
+    <p>Upload a .kml file with gx:Track data → smooth → interpolate → analyze → export tour for Google Earth</p>
+
+    <input type="file" id="kmlFile" accept=".kml"><br><br>
+
+    <label for="windowLength">Savitzky-Golay Window Length (odd, ≥7):</label>
+    <input type="number" id="windowLength" value="21" min="7" step="2">
+
+    <label for="polyOrder">Savitzky-Golay Polynomial Order:</label>
+    <input type="number" id="polyOrder" value="5" min="2" max="6">
+
+    <label for="timeStep">Resampling Time Step (seconds):</label>
+    <input type="number" id="timeStep" value="1" min="0.1" step="0.1">
+	
+	<label for="dedupeTolerance">Point Deduplication Threshold (milliseconds):</label>
+    <input type="number" id="dedupeTolerance" value="50" min="0" step="10">
+	
+	<label for="lowPassWindow">Final Low-Pass Window (seconds, 0 = disable):</label>
+    <input type="number" id="lowPassWindow" value="2" min="0" step="1">
+
+	<p>Process only a portion of the track. Useful for focusing on takeoff, landing, or specific maneuvers.</p>
+
+    <label for="startOffsetSec">Start offset (seconds from beginning, default 0):</label>
+    <input type="number" id="startOffsetSec" value="0" min="0" step="10">
+
+    <label for="endOffsetSec">End offset (seconds from end, default 0):</label>
+    <input type="number" id="endOffsetSec" value="0" min="0" step="10">
+
+    <label for="lastSeconds">Alternatively, process only the last N seconds (overrides offsets above):</label>
+    <input type="number" id="lastSeconds" value="" placeholder="e.g. 300 for last 5 minutes" min="60" step="10">
+
+    <p><small>Note: Run a full-track process first to see total duration in the Debug section if using offsets.</small></p>
+	
+    <button onclick="processKML()">Process File</button>
+	<div id="status" style="display:none; margin:20px 0; font-weight:bold; color:#333;"></div>
+	<div id="spinner" style="display:none; margin:20px 0;">
+		<style>
+			.spinner {
+				border: 4px solid #f3f3f3;
+				border-top: 4px solid #3498db;
+				border-radius: 50%;
+				width: 30px;
+				height: 30px;
+				animation: spin 1s linear infinite;
+				display: inline-block;
+				margin-right: 10px;
+			}
+			@keyframes spin {
+				0% { transform: rotate(0deg); }
+				100% { transform: rotate(360deg); }
+			}
+		</style>
+		<div class="spinner"></div><span id="statusText">Processing...</span>
+	</div>
+	
+    <div id="exportButtons" style="display:none; margin: 20px 0;">
+        <button onclick="exportSmoothedKML()">Export Smoothed Track KML</button>
+        <button onclick="exportTourKML()">Export POV Tour KML (with camera orientation)</button>
+    </div>
+
+    <h2>Debug / Data Summary</h2>
+    <div id="debug">No data loaded yet.</div>
+
+    <h2>Velocity over Time (m/s)</h2>
+    <canvas id="velocityChart"></canvas>
+
+    <h2>Altitude over Time (m)</h2>
+    <canvas id="altitudeChart"></canvas>
+
+    <h2>Acceleration Magnitude (m/s²)</h2>
+    <canvas id="accelChart"></canvas>
+
+    <h2>Ground Track Heading (°)</h2>
+    <canvas id="headingChart"></canvas>
+
+    <h2>Flight Path / Pitch Angle (°)</h2>
+    <canvas id="pitchChart"></canvas>
+
+    <h2>Estimated Bank / Roll Angle (°)</h2>
+    <canvas id="rollChart"></canvas>
+
+    <script>
+        let globalNewPoints = null;
+        let globalNewTimes = null;
+		let chartInstances = {};
+
+
+        // ────────────────────────────────────────────────
+        // Savitzky-Golay smoothing
+        // ────────────────────────────────────────────────
+        function savgol(data, times, windowLength, polyOrder) {
+            const half = Math.floor(windowLength / 2);
+            const n = data.length;
+            const smoothed = new Array(n).fill(0);
+
+            for (let i = 0; i < n; i++) {
+                const left = Math.max(0, i - half);
+                const right = Math.min(n - 1, i + half);
+                const w = right - left + 1;
+
+                if (w < polyOrder + 2) {
+                    smoothed[i] = data[i];
+                    continue;
+                }
+
+                let X = math.zeros(w, polyOrder + 1);
+                for (let p = 0; p < w; p++) {
+                    const xt = times[left + p] - times[i];
+                    let pow = 1;
+                    for (let j = 0; j <= polyOrder; j++) {
+                        X.set([p, j], pow);
+                        pow *= xt;
+                    }
+                }
+
+                const y = math.matrix(data.slice(left, right + 1));
+                const coeffsMatrix = math.multiply(math.pinv(X), y);
+
+                let c0;
+                if (math.typeOf(coeffsMatrix) === 'Matrix') {
+                    c0 = coeffsMatrix.get([0, 0]);
+                } else if (Array.isArray(coeffsMatrix)) {
+                    c0 = coeffsMatrix[0]?.[0] ?? coeffsMatrix[0];
+                } else {
+                    c0 = coeffsMatrix;
+                }
+
+                smoothed[i] = Number(c0) || data[i];
+            }
+            return smoothed;
+        }
+
+        // ────────────────────────────────────────────────
+        // Natural Cubic Spline
+        // ────────────────────────────────────────────────
+        function naturalCubicSpline(times, values) {
+            const n = times.length - 1;
+            if (n < 1) throw new Error("Need ≥2 points");
+
+            const h = new Array(n);
+            for (let i = 0; i < n; i++) h[i] = times[i+1] - times[i];
+
+            const A = math.zeros(n+1, n+1);
+            const B = math.zeros(n+1, 1);
+
+            A.set([0, 0], 1); B.set([0, 0], 0);
+            A.set([n, n], 1); B.set([n, 0], 0);
+
+            for (let i = 1; i < n; i++) {
+                A.set([i, i-1], h[i-1]);
+                A.set([i, i],   2*(h[i-1] + h[i]));
+                A.set([i, i+1], h[i]);
+                B.set([i, 0], 3 * (
+                    (values[i+1] - values[i]) / h[i] -
+                    (values[i]   - values[i-1]) / h[i-1]
+                ));
+            }
+
+            const k = math.lusolve(A, B).valueOf().flat();
+
+            const coeffs = [];
+            for (let i = 0; i < n; i++) {
+                const a = values[i];
+                const b = (values[i+1] - values[i]) / h[i] - h[i]*(2*k[i] + k[i+1])/3;
+                const c = k[i];
+                const d = (k[i+1] - k[i]) / (3 * h[i]);
+                coeffs.push({a, b, c, d, h: h[i]});
+            }
+            return { times, coeffs };
+        }
+
+        function evalCubicSpline(spline, t) {
+            const { times, coeffs } = spline;
+            const n = times.length;
+
+            if (t <= times[0]) return coeffs[0].a;
+            if (t >= times[n-1]) {
+                const last = coeffs[coeffs.length-1];
+                const dt = times[n-1] - times[n-2];
+                return last.a + last.b * dt + last.c * dt*dt + last.d * dt*dt*dt;
+            }
+
+            let i = 0;
+            while (i < coeffs.length && t > times[i+1]) i++;
+            const dt = t - times[i];
+            const {a, b, c, d} = coeffs[i];
+            return a + b*dt + c*dt*dt + d*dt*dt*dt;
+        }
+
+
+		function applyMovingAverage(data, windowSeconds, timeStepSeconds) {
+			if (windowSeconds <= 0) return data.slice();
+
+			// Convert time window to odd number of points for perfect symmetry
+			let windowPoints = Math.round(windowSeconds / timeStepSeconds);
+			if (windowPoints < 3) windowPoints = 3;
+			if (windowPoints % 2 === 0) windowPoints += 1; // force odd
+
+			const half = Math.floor(windowPoints / 2);
+			let smoothed = new Array(data.length);
+
+			for (let i = 0; i < data.length; i++) {
+				let sum = 0;
+				let count = 0;
+				const start = Math.max(0, i - half);
+				const end = Math.min(data.length - 1, i + half);
+				for (let j = start; j <= end; j++) {
+					sum += data[j];
+					count++;
+				}
+				smoothed[i] = sum / count;
+			}
+			return smoothed;
+		}
+
+
+		// For resampling, use linear interp on smoothed points (less wobble)
+		function linearInterp(times, values, newT) {
+			let i = 0;
+			while (newT > times[i+1]) i++;
+			const frac = (newT - times[i]) / (times[i+1] - times[i]);
+			return values[i] + frac * (values[i+1] - values[i]);
+		}
+
+		// In newLats = newTimes.map(t => linearInterp(times, lats, t)); // etc.
+        // ────────────────────────────────────────────────
+        // Main processing
+        // ────────────────────────────────────────────────
+		// Replace the entire processKML() function with this async version
+		async function processKML() {
+			const file = document.getElementById('kmlFile').files[0];
+			if (!file) return alert('Select a KML file.');
+
+			// UI setup: disable button, show spinner
+			const processBtn = document.querySelector('button[onclick="processKML()"]');
+			processBtn.disabled = true;
+			processBtn.textContent = 'Processing...';
+
+			const spinnerDiv = document.getElementById('spinner');
+			const statusText = document.getElementById('statusText');
+			spinnerDiv.style.display = 'block';
+			statusText.textContent = 'Loading KML file...';
+
+			// Hide export buttons until done
+			document.getElementById('exportButtons').style.display = 'none';
+            let debugExtra = '';
+			
+			try {
+				// Step 1: Read file (asynchronous)
+				const kmlText = await new Promise((resolve, reject) => {
+					const reader = new FileReader();
+					reader.onload = (e) => resolve(e.target.result);
+					reader.onerror = reject;
+					reader.readAsText(file);
+				});
+
+				await yieldToUI(() => statusText.textContent = 'Parsing KML and extracting points...');
+
+				// Step 2: Parse KML
+				const parser = new DOMParser();
+				const doc = parser.parseFromString(kmlText, "text/xml");
+
+				const tracks = doc.getElementsByTagNameNS("http://www.google.com/kml/ext/2.2", "Track");
+				if (tracks.length === 0) throw new Error('No gx:Track found.');
+
+				let points = [];
+				for (const track of tracks) {
+					const whens  = track.getElementsByTagName("when");
+					const coords = track.getElementsByTagNameNS("http://www.google.com/kml/ext/2.2", "coord");
+					for (let i = 0; i < whens.length; i++) {
+						const [lon, lat, altStr] = coords[i].textContent.trim().split(/\s+/);
+						points.push({
+							time: new Date(whens[i].textContent).getTime(),
+							lat: parseFloat(lat),
+							lon: parseFloat(lon),
+							alt: parseFloat(altStr) || 0
+						});
+					}
+				}
+
+				if (points.length < 4) throw new Error('Too few points for meaningful analysis (<4).');
+
+				points.sort((a,b) => a.time - b.time);
+				
+				// === NEW: Deduplicate / merge near-identical timestamps ===
+				let dedupePoints = [];
+				let current = null;
+				
+				const timeTol = parseInt(document.getElementById('dedupeTolerance').value); // ms tolerance for considering timestamps identical
+				for (let p of points) {
+					if (current === null || p.time - current.time > timeTol) {
+						if (current !== null) dedupePoints.push(current);
+						current = {...p};  // shallow copy
+					} else {
+						// Average position for duplicates (common ADS-B artefact)
+						current.lat = (current.lat + p.lat) / 2;
+						current.lon = (current.lon + p.lon) / 2;
+						current.alt = (current.alt + p.alt) / 2;
+					}
+				}
+				if (current !== null) dedupePoints.push(current);
+
+				points = dedupePoints;  // replace original array
+				if (points.length < 4) throw new Error('Too few unique points after deduplication.');
+				await yieldToUI(() => statusText.textContent = 'Fixing zero altitudes...');
+
+				let times = points.map(p => p.time);
+				let lats = points.map(p => p.lat);
+				let lons = points.map(p => p.lon);
+				let alts = points.map(p => p.alt);
+
+				// ────────────────────────────────────────────────
+				// Fix zero altitudes by propagating nearest non-zero value
+				// (forward then backward pass – handles zeros at start, end, or middle)
+				// ────────────────────────────────────────────────
+				let zeroCount = 0;
+				const filledAlts = [...alts];  // work on a copy to preserve original if needed
+
+				// Forward pass: replace 0 with last known non-zero
+				let lastNonZero = null;
+				for (let i = 0; i < filledAlts.length; i++) {
+					if (filledAlts[i] !== 0) {
+						lastNonZero = filledAlts[i];
+					} else if (lastNonZero !== null) {
+						filledAlts[i] = lastNonZero;
+						zeroCount++;
+					}
+				}
+
+				// Backward pass: fill any remaining leading zeros with next non-zero
+				let nextNonZero = null;
+				for (let i = filledAlts.length - 1; i >= 0; i--) {
+					if (filledAlts[i] !== 0) {
+						nextNonZero = filledAlts[i];
+					} else if (nextNonZero !== null) {
+						filledAlts[i] = nextNonZero;
+						zeroCount++;
+					}
+				}
+
+				// === Time range filtering ===
+                const trackStartTime = points[0].time;
+                const trackEndTime = points[points.length - 1].time;
+                const totalDurationSec = (trackEndTime - trackStartTime) / 1000;
+
+                let processStartTime = trackStartTime;
+                let processEndTime = trackEndTime;
+                let rangeNote = "Full track";
+				const lastSecondsVal = parseFloat(document.getElementById('lastSeconds').value);
+                if (!isNaN(lastSecondsVal) && lastSecondsVal > 0) {
+                    const useLast = Math.min(lastSecondsVal, totalDurationSec);
+                    processStartTime = trackEndTime - useLast * 1000;
+                    processEndTime = trackEndTime;
+                    rangeNote = `Last ${useLast.toFixed(0)} seconds (of ${totalDurationSec.toFixed(0)}s total)`;
+                } else {
+                    const startOffsetSec = parseFloat(document.getElementById('startOffsetSec').value) || 0;
+                    const endOffsetSec = parseFloat(document.getElementById('endOffsetSec').value) || 0;
+
+                    processStartTime = trackStartTime + startOffsetSec * 1000;
+                    processEndTime = trackEndTime - endOffsetSec * 1000;
+
+                    if (processStartTime >= processEndTime - 1000) {  // small tolerance
+                        alert("Invalid range (start ≥ end). Falling back to full track.");
+                        processStartTime = trackStartTime;
+                        processEndTime = trackEndTime;
+                        rangeNote = "Full track (invalid range ignored)";
+                    } else {
+                        rangeNote = `Custom: +${startOffsetSec}s from start, -${endOffsetSec}s from end`;
+                    }
+                }
+
+                const filteredPoints = points.filter(p => p.time >= processStartTime && p.time <= processEndTime);
+
+                if (filteredPoints.length < 10) {
+                    throw new Error(`Too few points in selected range (${filteredPoints.length}). Try a wider range.`);
+                }
+
+                // Use filtered data from now on
+                times = filteredPoints.map(p => p.time);
+                lats = filteredPoints.map(p => p.lat);
+                lons = filteredPoints.map(p => p.lon);
+                alts = filteredPoints.map(p => p.alt);
+
+                debugExtra += `Processed range: ${rangeNote}\n`;
+                debugExtra += `Total points in file: ${points.length}\n`;
+                debugExtra += `Points after time filtering: ${filteredPoints.length}\n`;
+				
+                // === end of time filtering ===
+				
+
+
+				await yieldToUI(() => statusText.textContent = 'Applying Savitzky-Golay smoothing...');
+
+				// Step 4: Smoothing
+				const windowLength = parseInt(document.getElementById('windowLength').value);
+				const polyOrder    = parseInt(document.getElementById('polyOrder').value);
+ 
+                // degrees are a different scale from meters, by a factor of about 110,000, so rescale first
+				alts = alts.map( v => v / 110000)
+				
+				lats = savgol(lats, times, windowLength, polyOrder);
+				lons = savgol(lons, times, windowLength, polyOrder);
+				alts = savgol(alts, times, windowLength, polyOrder);
+				
+				alts = alts.map(v => v * 110000)
+				
+				await yieldToUI(() => statusText.textContent = 'Fitting cubic splines...');
+
+
+				// Step 5: Fit splines for interpolation
+				const splineLat = naturalCubicSpline(times, lats);
+				const splineLon = naturalCubicSpline(times, lons);
+				const splineAlt = naturalCubicSpline(times, alts);
+
+				await yieldToUI(() => statusText.textContent = 'Resampling at regular intervals...');
+
+				// Step 6: Resample to constant timestep, avoids problems with attitude derivation
+				const timeStepSec  = parseFloat(document.getElementById('timeStep').value);
+				const tMin = times[0], tMax = times[times.length-1];
+				const newTimes = [];
+				for (let t = tMin; t <= tMax + 1e-6; t += timeStepSec * 1000) {
+					newTimes.push(t);
+				}
+				if (newTimes.length === 0 || newTimes[newTimes.length-1] < tMax - 1e-3) {
+					newTimes.push(tMax);
+				}
+
+				let resampledLats = newTimes.map(t => evalCubicSpline(splineLat, t));
+				let resampledLons = newTimes.map(t => evalCubicSpline(splineLon, t));
+				let resampledAlts = newTimes.map(t => evalCubicSpline(splineAlt, t));
+
+				// === NEW: Final low-pass moving average ===
+                await yieldToUI(() => statusText.textContent = 'Applying final low-pass moving average...');
+				
+				const lowPassWindowSec = parseFloat(document.getElementById('lowPassWindow').value) || 0;			
+
+                let finalLats = resampledLats;
+                let finalLons = resampledLons;
+                let finalAlts = resampledAlts;
+
+
+                if (lowPassWindowSec > 0) {
+                    finalLats = applyMovingAverage(resampledLats, lowPassWindowSec, timeStepSec);
+                    finalLons = applyMovingAverage(resampledLons, lowPassWindowSec, timeStepSec);
+                    finalAlts = applyMovingAverage(resampledAlts, lowPassWindowSec, timeStepSec);
+
+                    // Calculate actual window size used for debug info
+                    let windowPoints = Math.round(lowPassWindowSec / timeStepSec);
+                    if (windowPoints < 3) windowPoints = 3;
+                    if (windowPoints % 2 === 0) windowPoints += 1;
+                    debugExtra = `\nFinal moving average applied: ~${lowPassWindowSec}s window (${windowPoints} points)\n`;
+                } else {
+                    debugExtra = `\nFinal low-pass disabled\n`;
+                }
+
+                // Append to debug output
+                document.getElementById('debug').textContent += debugExtra;
+
+
+				await yieldToUI(() => statusText.textContent = 'Computing velocity, heading, pitch, roll...');
+
+				// Step 7: Derived quantities (the long loop)
+				const velocities = [0];
+				const accelerations = [0];
+				const headings = [0];
+				const pitches = [0];
+				const rolls = [0];
+				const R = 6371000;
+				const g = 9.81;
+				
+				let debug_samples = "\nDebug Samples\n";
+				for (let i = 1; i < newTimes.length; i++) {
+					// ... your full derived quantities loop here (unchanged) ...
+                   const dt = (newTimes[i] - newTimes[i-1]) / 1000;
+                    if (dt < 1e-6) {
+                        velocities.push(velocities[i-1] || 0);
+                        accelerations.push(0);
+                        headings.push(headings[i-1]);
+                        pitches.push(0);
+                        rolls.push(0);
+                        continue;
+                    }
+
+					const prev = {lat: finalLats[i-1], lon: finalLons[i-1], alt: finalAlts[i-1]};
+                    const curr = {lat: finalLats[i],   lon: finalLons[i],   alt: finalAlts[i]  };	
+					// for debugging feedback
+					if(i%10 == 0){
+					    debug_samples += `${newTimes[i]}  lat:${curr.lat.toFixed(6)}  lon:${curr.lon.toFixed(6)}  alt:${curr.alt.toFixed(1)}\n`;
+					}
+                    // Distance & velocity
+                    const dLat = (curr.lat - prev.lat) * Math.PI / 180;
+                    const dLon = (curr.lon - prev.lon) * Math.PI / 180;
+                    const a = Math.sin(dLat/2)**2 + Math.cos(prev.lat * Math.PI/180) * Math.cos(curr.lat * Math.PI/180) * Math.sin(dLon/2)**2;
+                    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                    const horiz = R * c;
+                    const vert = curr.alt - prev.alt;
+                    const dist = Math.sqrt(horiz**2 + vert**2);
+                    const vel = dist / dt;
+                    velocities.push(vel);
+
+                    // Acceleration (simple backward difference)
+                    if (i > 1) {
+                        const prevVel = velocities[i-1];
+                        const acc = (vel - prevVel) / ((newTimes[i] - newTimes[i-2]) / 1000);
+                        accelerations.push(Math.abs(acc));
+                    } else {
+                        accelerations.push(0);
+                    }
+
+                    // Heading
+                    const y = Math.sin(dLon) * Math.cos(curr.lat * Math.PI / 180);
+                    const x = Math.cos(prev.lat * Math.PI / 180) * Math.sin(curr.lat * Math.PI / 180) -
+                              Math.sin(prev.lat * Math.PI / 180) * Math.cos(curr.lat * Math.PI / 180) * Math.cos(dLon);
+                    let heading = Math.atan2(y, x) * 180 / Math.PI;
+                    if (heading < 0) heading += 360;
+                    if (isNaN(heading)) heading = headings[i-1];
+                    headings.push(heading);
+
+                    // Pitch (flight path angle)
+                    let pitch = 0;
+                    if (horiz > 0.1) {
+                        pitch = Math.atan2(vert, horiz) * 180 / Math.PI;
+                    }
+                    if (isNaN(pitch)) pitch = 0;
+                    pitches.push(pitch);
+
+					// ──────────────── Roll / Bank Angle Estimate ────────────────
+					// I have a better way to do this that handles inverted flight, but I'm using this for now
+                    let roll = 0;
+                    if (i > 1) {
+                        let dHeading = headings[i] - headings[i-1];
+                        // Normalize to smallest angle (-180° to +180°)
+                        if (dHeading > 180) dHeading -= 360;
+                        if (dHeading < -180) dHeading += 360;
+
+                        const dT = (newTimes[i] - newTimes[i-1]) / 1000;
+                        if (dT > 0.01 && horiz > 1) {  // avoid tiny/zero segments
+                            const omega = (dHeading * Math.PI / 180) / dT;  // signed rad/s
+							if (Math.abs(omega) < 0.005) {  // ~0.3°/s threshold
+								roll = 0;
+							} else {
+								const V_horiz = horiz / dT;  // m/s
+
+								// Signed centripetal acceleration: V * ω
+								// Then tan(phi) = (V * ω) / g    → phi keeps sign of ω
+								const phi_rad = Math.atan( (V_horiz * omega) / g );
+
+								roll = phi_rad * 180 / Math.PI;
+
+								// Optional: limit to realistic aircraft bank angles
+								// roll = Math.max(-70, Math.min(70, roll));
+							}
+                        }
+                    }
+                    rolls.push(roll);
+					// Optional: yield every ~500 points on very long tracks
+					if (i % 500 === 0) await yieldToUI();
+				}
+
+				await yieldToUI(() => statusText.textContent = 'Generating charts and debug info...');
+
+				// Step 8: Final setup (debug, globals, charts)
+				// After the main loop, smooth rolls (3-point average)
+				for (let i = 1; i < rolls.length - 1; i++) {
+					rolls[i] = (rolls[i-1] + rolls[i] + rolls[i+1]) / 3;
+				}
+                // Store for export
+                globalNewTimes = newTimes;
+                globalNewPoints = newTimes.map((t, i) => ({
+                    time: new Date(t).toISOString(),
+                    lat: finalLats[i],
+                    lon: finalLons[i],
+                    alt: finalAlts[i],
+					vel: velocities[i],
+                    heading: headings[i],
+                    pitch: pitches[i],
+                    roll: rolls[i]
+                }));
+
+                // Debug output
+                let debugText = `Original points: ${points.length}\n`;
+                debugText += `Resampled points: ${newTimes.length}\n`;
+                debugText += `Time range: ${new Date(tMin).toISOString()} → ${new Date(tMax).toISOString()}\n\n`;
+                debugText += "First 5 points:\n";
+                globalNewPoints.slice(0,5).forEach(p => {
+                    debugText += `${p.time}  lat:${p.lat.toFixed(6)}  lon:${p.lon.toFixed(6)}  alt:${p.alt.toFixed(1)}  vel: ${p.vel.toFixed(1)} hdg:${p.heading.toFixed(1)}°  pitch:${p.pitch.toFixed(1)}°  roll:${p.roll.toFixed(1)}°\n`;
+                });
+                debugText += "\nLast 5 points:\n";
+                globalNewPoints.slice(-5).forEach(p => {
+                    debugText += `${p.time}  lat:${p.lat.toFixed(6)}  lon:${p.lon.toFixed(6)}  alt:${p.alt.toFixed(1)}  vel: ${p.vel.toFixed(1)} hdg:${p.heading.toFixed(1)}°  pitch:${p.pitch.toFixed(1)}°  roll:${p.roll.toFixed(1)}°\n`;
+                });
+				debugText += "\n Raw Smoothed Points\n";
+				debugText += debug_samples;
+				
+                document.getElementById('debug').textContent = debugText;
+
+                document.getElementById('exportButtons').style.display = 'block';
+				
+				statusText.textContent = 'Generating charts...';
+				// Destroy old charts properly
+                    Object.keys(chartInstances).forEach(id => {
+                        if (chartInstances[id]) {
+                            chartInstances[id].destroy();
+                        }
+                    });
+                chartInstances = {};
+                const labels = newTimes.map(t => new Date(t).toISOString());
+
+
+
+                // Create charts
+				// Create new charts and store instances
+				chartInstances.velocityChart = new Chart(document.getElementById('velocityChart').getContext('2d'), {
+					type: 'line', data: { labels, datasets: [{label: 'Velocity (m/s)', data: velocities, borderColor: 'blue', fill: false}] },
+					options: { responsive: true, scales: { x:{title:{display:true,text:'Time'}}, y:{title:{display:true,text:'m/s'}} } }
+				});
+
+				chartInstances.altitudeChart = new Chart(document.getElementById('altitudeChart').getContext('2d'), {
+					type: 'line', data: { labels, datasets: [{label: 'Altitude (m)', data: finalAlts, borderColor: 'green', fill: false}] },
+					options: { responsive: true, scales: { x:{title:{display:true,text:'Time'}}, y:{title:{display:true,text:'m'}} } }
+				});
+
+				chartInstances.accelChart = new Chart(document.getElementById('accelChart').getContext('2d'), {
+					type: 'line', data: { labels, datasets: [{label: 'Accel mag (m/s²)', data: accelerations, borderColor: 'orange', fill: false}] },
+					options: { responsive: true, scales: { x:{title:{display:true,text:'Time'}}, y:{title:{display:true,text:'m/s²'}} } }
+				});
+
+				chartInstances.headingChart = new Chart(document.getElementById('headingChart').getContext('2d'), {
+					type: 'line', data: { labels, datasets: [{label: 'Heading (°)', data: headings, borderColor: 'purple', fill: false, tension: 0.1}] },
+					options: { responsive: true, scales: { x:{title:{display:true,text:'Time'}}, y:{title:{display:true,text:'0° = North'}, min:0, max:360, ticks:{stepSize:45}} } }
+				});
+
+				chartInstances.pitchChart = new Chart(document.getElementById('pitchChart').getContext('2d'), {
+					type: 'line', data: { labels, datasets: [{label: 'Pitch / Flight Path (°)', data: pitches, borderColor: 'teal', fill: false, tension: 0.1}] },
+					options: { responsive: true, scales: { x:{title:{display:true,text:'Time'}}, y:{title:{display:true,text:'positive = climb'}, suggestedMin:-30, suggestedMax:30} } }
+				});
+
+				chartInstances.rollChart = new Chart(document.getElementById('rollChart').getContext('2d'), {
+					type: 'line', data: { labels, datasets: [{label: 'Bank / Roll (°)', data: rolls, borderColor: 'red', fill: false, tension: 0.1}] },
+					options: { responsive: true, scales: { x:{title:{display:true,text:'Time'}}, y:{title:{display:true,text:'positive = right wing down'}, suggestedMin:-60, suggestedMax:60} } }
+				});
+
+				// Success – hide spinner
+				spinnerDiv.style.display = 'none';
+				processBtn.disabled = false;
+				processBtn.textContent = 'Process File';
+				document.getElementById('exportButtons').style.display = 'block';
+
+			} catch (err) {
+				// Error handling
+				spinnerDiv.style.display = 'none';
+				processBtn.disabled = false;
+				processBtn.textContent = 'Process File';
+				alert('Error: ' + err.message || err);
+			}
+		}
+
+		// Helper to yield control to UI (allows repaint)
+		function yieldToUI(updateStatus = null) {
+			if (updateStatus) updateStatus();
+			return new Promise(resolve => setTimeout(resolve, 10));
+		}
+		
+        // ────────────────────────────────────────────────
+        // Export functions
+        // ────────────────────────────────────────────────
+        function exportSmoothedKML() {
+            if (!globalNewPoints) return alert("No data processed yet.");
+            let kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+<Folder>
+    <name>Smoothed N323VR Track</name>
+    <Placemark>
+        <name>Smoothed N323VR</name>
+        <Style>
+            <LineStyle>
+                <color>ff1c1ae3</color>
+                <width>4</width>
+            </LineStyle>
+            <IconStyle>
+                <Icon>
+                    <href>http://maps.google.com/mapfiles/kml/shapes/airports.png</href>
+                </Icon>
+            </IconStyle>
+        </Style>
+        <gx:Track>
+            <altitudeMode>absolute</altitudeMode>
+            <extrude>1</extrude>`;
+			
+            globalNewPoints.forEach(p => {
+			    if(!(isNaN(p.lon) || isNaN(p.lat))) kml += `      <when>${p.time}</when>\n      <gx:coord>${p.lon.toFixed(8)} ${p.lat.toFixed(8)} ${p.alt.toFixed(2)}</gx:coord>\n`;
+            });
+            kml += `    </gx:Track>
+</Placemark>
+</Folder>
+</kml>`;
+
+            downloadKML(kml, 'smoothed_track.kml');
+        }
+
+        function exportTourKML() {
+            if (!globalNewPoints) return alert("No data processed yet.");
+
+            let kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+  <Document>
+    <name>Aircraft POV Tour</name>
+    <gx:Tour>
+      <name>Flight Path Tour</name>
+      <gx:Playlist>
+`;
+            let prevTime = 0
+
+
+            for (let i = 0; i < globalNewPoints.length; i++) {
+                const p = globalNewPoints[i];
+				if(isNaN(p.lat) || isNaN(p.lon) || isNaN(p.alt))  continue; // because my code sucks
+				let duration = 3;
+				if(prevTime != 0) {
+                    duration = ((globalNewTimes[i] - prevTime) / 1000).toFixed(2);
+				}
+				prevTime = globalNewTimes[i];
+                kml += `        <gx:FlyTo>
+          <gx:duration>${duration}</gx:duration>
+          <gx:flyToMode>smooth</gx:flyToMode>
+          <Camera>
+            <longitude>${p.lon.toFixed(8)}</longitude>
+            <latitude>${p.lat.toFixed(8)}</latitude>
+            <altitude>${p.alt.toFixed(2)}</altitude>
+            <heading>${p.heading.toFixed(2)}</heading>
+            <tilt>${(90 + p.pitch).toFixed(2)}</tilt>
+            <roll>${-p.roll.toFixed(2)}</roll>
+            <altitudeMode>absolute</altitudeMode>
+          </Camera>
+        </gx:FlyTo>\n`;
+            }
+
+            kml += `      </gx:Playlist>
+    </gx:Tour>
+  </Document>
+</kml>`;
+
+            downloadKML(kml, 'aircraft_pov_tour.kml');
+        }
+
+        function downloadKML(content, filename) {
+            const blob = new Blob([content], {type: 'application/vnd.google-earth.kml+xml'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
