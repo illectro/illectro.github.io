@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aircraft Track Analyzer & Tour Generator</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/13.0.0/math.js"></script>
 	<script src="https://unpkg.com/numeric@1.2.6/numeric.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.5; }
@@ -14,6 +14,14 @@
         button { padding: 8px 16px; margin-right: 12px; }
         #debug { background: #f8f8f8; padding: 12px; border: 1px solid #ddd; max-height: 320px; overflow-y: auto; font-family: monospace; font-size: 0.9em; white-space: pre-wrap; }
         h2 { margin-top: 2em; }
+		#groundTrackChart {
+			max-width: 900px;
+			height: 600px;   /* adjust as desired */
+			margin: 20px 0;
+			display: block;
+			background: #f9f9f9;
+			border: 1px solid #ddd;
+		}
     </style>
 </head>
 <body>
@@ -21,6 +29,18 @@
     <p>Upload a .kml file with gx:Track data → smooth → interpolate → analyze → export tour for Google Earth</p>
 
     <input type="file" id="kmlFile" accept=".kml"><br><br>
+	
+	<label for="useKalman">Use Kalman Filter instead of Savitzky-Golay:</label>
+	<input type="checkbox" id="useKalman" checked>  <!-- Default to on, or off as preferred -->
+
+	<label for="kalmanOrder">Kalman Model Order (2-4; higher = smoother maneuvers):</label>
+	<input type="number" id="kalmanOrder" value="3" min="2" max="4" step="1">
+
+	<label for="processNoise">Kalman Process Noise (Q; 1e-6 to 1e-2; higher for agile flight):</label>
+	<input type="number" id="processNoise" value="0.00001" min="0.000001" max="0.01" step="0.000001">
+
+	<label for="measurementNoise">Kalman Measurement Noise (R; ~7.62m for alt, 0.0001° for pos):</label>
+	<input type="number" id="measurementNoise" value="7.62" min="0.1" step="0.1">
 
     <label for="windowLength">Savitzky-Golay Window Length (odd, ≥7):</label>
     <input type="number" id="windowLength" value="21" min="7" step="2">
@@ -75,11 +95,17 @@
     <div id="exportButtons" style="display:none; margin: 20px 0;">
         <button onclick="exportSmoothedKML()">Export Smoothed Track KML</button>
         <button onclick="exportTourKML()">Export POV Tour KML (with camera orientation)</button>
+		<button onclick="exportRawCSV()">Export RAW Original CSV (for debugging)</button>
     </div>
 
     <h2>Debug / Data Summary</h2>
     <div id="debug">No data loaded yet.</div>
 
+	<h2>Ground Track (Longitude vs Latitude)</h2>
+	<div id="groundTrackContainer" style="position: relative; width: 100%; max-width: 900px; margin: 20px 0; background: #f9f9f9; border: 1px solid #ddd; overflow: hidden;">
+		<canvas id="groundTrackChart"></canvas>
+	</div>
+	
     <h2>Velocity over Time (m/s)</h2>
     <canvas id="velocityChart"></canvas>
 
@@ -101,9 +127,136 @@
     <script>
         let globalNewPoints = null;
         let globalNewTimes = null;
+		let globalRawPoints = null;
 		let chartInstances = {};
 
+		// Kalman Filter for 1D (per lat/lon/alt)
+		function KalmanFilter1D(Q = 1e-5, R = 7.62, order = 2) {
+			this.order = order;
+			this.n = order + 1;
+			this.Q = Q;
+			this.R = R;
+			this.dt = 1.0;
+			this.x = math.zeros(this.n, 1);
+			this.P = math.multiply(math.identity(this.n), 1000);
+		}
+		
+		KalmanFilter1D.prototype.getA = function() {
+			const A = math.identity(this.n);
+			let dt_pow = this.dt;
+			for (let i = 1; i < this.n; i++) {
+				for (let j = 0; j < i; j++) {
+					A.set([j, i], dt_pow / factorial(i - j));
+				}
+				dt_pow *= this.dt;
+			}
+			return A;
+		};
 
+		KalmanFilter1D.prototype.predict = function() {
+			const A = this.getA();
+			this.x = math.multiply(A, this.x);
+			this.P = math.add(math.multiply(math.multiply(A, this.P), math.transpose(A)), math.multiply(math.identity(this.n), this.Q));
+		};
+
+		KalmanFilter1D.prototype.update = function(z) {
+			const H = math.zeros(1, this.n);
+			H.set([0, 0], 1);
+			const HT = math.transpose(H);
+			const Hx = math.multiply(H, this.x);
+			const y = z - Hx.get([0, 0]);
+			const S = math.add(math.multiply(math.multiply(H, this.P), HT).get([0, 0]), this.R);
+			const K = math.divide(math.multiply(this.P, HT), S);
+			this.x = math.add(this.x, math.multiply(K, y));
+			this.P = math.multiply(math.subtract(math.identity(this.n), math.multiply(K, H)), this.P);
+		};
+
+		// Helper factorial
+		function factorial(n) {
+			if (n <= 1) return 1;
+			let res = 1;
+			for (let i = 2; i <= n; i++) res *= i;
+			return res;
+		}
+
+		// Smooth function (forward + RTS backward)
+		function kalmanSmooth(times, values, Q = 1e-5, R = 7.62, order = 2) {
+			const n_points = times.length;
+			const kf = new KalmanFilter1D(Q, R, order);
+			const forward_x = new Array(n_points);
+			const forward_P = new Array(n_points);
+			for (let i = 0; i < n_points; i++) {
+				if (i > 0) kf.dt = times[i] - times[i-1];
+				kf.predict();
+				kf.update(values[i]);
+				forward_x[i] = math.clone(kf.x);
+				forward_P[i] = math.clone(kf.P);
+			}
+
+			// RTS backward
+			let smoothed_x = forward_x.slice();
+			let smoothed_P = forward_P.slice();
+			for (let i = n_points - 2; i >= 0; i--) {
+				kf.dt = times[i+1] - times[i];
+				const A = kf.getA();
+				const P_pred = math.add(math.multiply(math.multiply(A, forward_P[i]), math.transpose(A)), math.multiply(math.identity(kf.n), kf.Q));
+				const Gain = math.multiply(math.multiply(forward_P[i], math.transpose(A)), math.inv(P_pred));
+				const innov = math.subtract(smoothed_x[i+1], math.multiply(A, forward_x[i]));
+				smoothed_x[i] = math.add(forward_x[i], math.multiply(Gain, innov));
+				smoothed_P[i] = math.add(forward_P[i], math.multiply(math.multiply(Gain, math.subtract(smoothed_P[i+1], P_pred)), math.transpose(Gain)));
+			}
+
+			// Extract positions (or return full state if needed for vel/accel)
+			return smoothed_x.map(x => x.get([0, 0]));
+		}
+
+        function resamplePath(path, sampleDt = null, numSamples = null) {
+            if (!path.length) return [];
+            path.sort((a, b) => a[0] - b[0]);
+
+            const times = path.map(p => p[0]);
+            const lons = path.map(p => p[1]);
+            const lats = path.map(p => p[2]);
+            const alts = path.map(p => p[3]);
+
+            for (let i = 1; i < times.length; i++) {
+                if (times[i] <= times[i - 1]) throw new Error("Times must be strictly increasing");
+            }
+
+            const splineLon = cubicSpline(times, lons);
+            const splineLat = cubicSpline(times, lats);
+            const splineAlt = cubicSpline(times, alts);
+
+            const tMin = times[0];
+            const tMax = times[times.length - 1];
+            let regTimes = [];
+            if (numSamples !== null) {
+                if (numSamples < 2) throw new Error("numSamples must be at least 2");
+                const step = (tMax - tMin) / (numSamples - 1);
+                for (let i = 0; i < numSamples; i++) {
+                    regTimes.push(tMin + i * step);
+                }
+            } else if (sampleDt !== null) {
+                if (sampleDt <= 0) throw new Error("sampleDt must be positive");
+                let t = tMin;
+                while (t <= tMax) {
+                    regTimes.push(t);
+                    t += sampleDt;
+                }
+            } else {
+                throw new Error("Provide either sampleDt or numSamples");
+            }
+
+            const resampled = [];
+            for (const t of regTimes) {
+                const lon = evaluateSpline(t, splineLon.b, splineLon.c, splineLon.d, times, lons);
+                const lat = evaluateSpline(t, splineLat.b, splineLat.c, splineLat.d, times, lats);
+                const alt = evaluateSpline(t, splineAlt.b, splineAlt.c, splineAlt.d, times, alts);
+                resampled.push([t, lon, lat, alt]);
+            }
+            return resampled;
+        }
+		
         // ────────────────────────────────────────────────
         // Savitzky-Golay smoothing
         // ────────────────────────────────────────────────
@@ -318,7 +471,8 @@
 					}
 				}
 				if (current !== null) dedupePoints.push(current);
-
+                globalRawPoints = points;
+				
 				points = dedupePoints;  // replace original array
 				if (points.length < 4) throw new Error('Too few unique points after deduplication.');
 				await yieldToUI(() => statusText.textContent = 'Fixing zero altitudes...');
@@ -407,21 +561,32 @@
                 // === end of time filtering ===
 				
 
-
-				await yieldToUI(() => statusText.textContent = 'Applying Savitzky-Golay smoothing...');
-
-				// Step 4: Smoothing
-				const windowLength = parseInt(document.getElementById('windowLength').value);
-				const polyOrder    = parseInt(document.getElementById('polyOrder').value);
- 
-                // degrees are a different scale from meters, by a factor of about 110,000, so rescale first
-				alts = alts.map( v => v / 110000)
+				const useKalman = document.getElementById('useKalman').checked;
+				await yieldToUI(() => statusText.textContent = 'Applying smoothing... ${useKalman}');
 				
-				lats = savgol(lats, times, windowLength, polyOrder);
-				lons = savgol(lons, times, windowLength, polyOrder);
-				alts = savgol(alts, times, windowLength, polyOrder);
-				
-				alts = alts.map(v => v * 110000)
+			
+
+				if (useKalman) {
+					//await yieldToUI(() => statusText.textContent = 'Applying Kalman smoothing...');
+					const order = parseInt(document.getElementById('kalmanOrder').value) || 3;
+					const Q = parseFloat(document.getElementById('processNoise').value) || 0.00001;
+					const R_pos = 0.0001;  // Fixed for lat/lon (degrees); or make tunable
+					const R_alt = parseFloat(document.getElementById('measurementNoise').value) || 7.62;
+
+					// Apply Kalman (using the class/function from my previous response)
+					lats = kalmanSmooth(times, lats, Q, R_pos, order);
+					lons = kalmanSmooth(times, lons, Q, R_pos, order);
+					alts = kalmanSmooth(times, alts, Q, R_alt, order);
+				} else {
+					// Existing SG code
+					//await yieldToUI(() => statusText.textContent = 'Applying Savistky-Golay smoothing...');
+					const windowLength = parseInt(document.getElementById('windowLength').value);
+					const polyOrder = parseInt(document.getElementById('polyOrder').value);
+					lats = savgol(lats, times, windowLength, polyOrder);
+					lons = savgol(lons, times, windowLength, polyOrder);
+					alts = savgol(alts, times, windowLength, polyOrder);
+				}
+
 				
 				await yieldToUI(() => statusText.textContent = 'Fitting cubic splines...');
 
@@ -659,6 +824,80 @@
 					options: { responsive: true, scales: { x:{title:{display:true,text:'Time'}}, y:{title:{display:true,text:'positive = right wing down'}, suggestedMin:-60, suggestedMax:60} } }
 				});
 
+				// Ground Track Chart (Lon vs Lat)
+                // ────────────────────────────────────────────────
+                await yieldToUI(() => statusText.textContent = 'Creating ground track plot...');
+
+                // Compute bounds for proper aspect ratio
+                const allLons = [...filteredPoints.map(p => p.lon), ...finalLons];
+                const allLats = [...filteredPoints.map(p => p.lat), ...finalLats];
+                const minLon = Math.min(...allLons);
+                const maxLon = Math.max(...allLons);
+                const minLat = Math.min(...allLats);
+                const maxLat = Math.max(...allLats);
+                const deltaLon = maxLon - minLon;
+                const deltaLat = maxLat - minLat || 0.000001; // avoid divide-by-zero
+                const avgLat = (minLat + maxLat) / 2;
+                const geographicAspect = (deltaLon * Math.cos(avgLat * Math.PI / 180)) / deltaLat;
+
+                const groundTrackCtx = document.getElementById('groundTrackChart').getContext('2d');
+
+                chartInstances.groundTrackChart = new Chart(groundTrackCtx, {
+                    type: 'scatter',
+                    data: {
+                        datasets: [
+                            {
+                                label: 'Original Points',
+                                data: filteredPoints.map(p => ({ x: p.lon, y: p.lat })),
+                                backgroundColor: 'rgba(255, 99, 99, 0.9)',
+                                borderColor: 'rgba(255, 99, 99, 1)',
+                                pointRadius: 4,
+                                pointHoverRadius: 6,
+                                showLine: false
+                            },
+                            {
+                                label: 'Smoothed/Resampled Track',
+                                data: newTimes.map((t, i) => ({ x: finalLons[i], y: finalLats[i] })),
+                                backgroundColor: 'rgba(54, 162, 235, 0.8)',
+                                borderColor: 'rgba(54, 162, 235, 1)',
+                                pointRadius: 1.5,
+                                borderWidth: 2,
+                                showLine: true,
+                                tension: 0,          // straight segments (change to 0.2–0.4 for slight curve if desired)
+                                fill: false
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,   // allow custom aspect ratio
+                        aspectRatio: geographicAspect || 1.5,  // fallback if tiny area
+                        scales: {
+                            x: {
+                                type: 'linear',
+                                title: { display: true, text: 'Longitude (°)' },
+                                ticks: { precision: 6 }
+                            },
+                            y: {
+                                title: { display: true, text: 'Latitude (°)' },
+                                ticks: { precision: 6 }
+                            }
+                        },
+                        plugins: {
+                            legend: { display: true },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const p = context.raw;
+                                        return `(${p.x.toFixed(6)}, ${p.y.toFixed(6)})`;
+                                    }
+                                }
+                            }
+                        },
+                        animation: false   // faster for large tracks
+                    }
+                });
+
 				// Success – hide spinner
 				spinnerDiv.style.display = 'none';
 				processBtn.disabled = false;
@@ -716,6 +955,26 @@
 
             downloadKML(kml, 'smoothed_track.kml');
         }
+
+        function exportRawCSV() {
+            if(!globalRawPoints) return alert("No data proceessed yet.");
+			let csv = "time,lon,lat,alt\n";
+			for (let i = 1; i < globalRawPoints.length; i++) {
+			    let point = globalRawPoints[i];
+				let prevPoint = globalRawPoints[i-1];
+				let dt = point.time - prevPoint.time;
+				let dLat = (point.lat - prevPoint.lat) *60;
+				let dLon = (point.lon - prevPoint.lon) *60 * Math.cos(point.lat * Math.PI/180);
+				let dv = Math.sqrt(dLat*dLat + dLon*dLon)
+				let v = 0;
+				if(dt > 0){
+				    v = 3600000* dv / dt;
+				}
+			    csv += `${point.time},${point.lon},${point.lat},${point.alt},${dv},${dt},${v}\n`;
+			}
+			downloadKML(csv,'aircraft_raw_points.csv')
+		}
+
 
         function exportTourKML() {
             if (!globalNewPoints) return alert("No data processed yet.");
