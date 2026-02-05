@@ -1251,7 +1251,7 @@
                     let windowPoints = Math.round(lowPassPosWindowSec / timeStepSec);
                     if (windowPoints < 3) windowPoints = 3;
                     if (windowPoints % 2 === 0) windowPoints += 1;
-                    debugExtra = `\nFinal moving average applied: ~${lowPassWindowSec}s window (${windowPoints} points)\n`;
+                    debugExtra = `\nFinal moving average applied: ~${lowPassPosWindowSec}s window (${windowPoints} points)\n`;
                 } else {
                     debugExtra = `\nFinal low-pass disabled\n`;
                 }
