@@ -6,7 +6,7 @@
     <title>Aircraft Track Analyzer & Tour Generator</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/13.0.0/math.js"></script>
-	<script src="https://unpkg.com/numeric@1.2.6/numeric.js"></script>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.5; }
         canvas { max-width: 900px; margin: 20px 0; display: block; }
@@ -23,40 +23,81 @@
 			border: 1px solid #ddd;
 		}
     </style>
+	<style>
+        .hidden { display: none; }  /* Class to hide sections */
+    </style>
 </head>
 <body>
     <h1>Aircraft Track Analyzer & Tour Generator</h1>
-    <p>Upload a .kml file with gx:Track data → smooth → interpolate → analyze → export tour for Google Earth</p>
+    <p>Upload a .kml or csv file with Track data → smooth → interpolate → analyze → export tour for Google Earth</p>
 
-    <input type="file" id="kmlFile" accept=".kml"><br><br>
+    <input type="file" id="kmlFile" accept=".kml,.csv"><br><br>
 	
-	<label for="useKalman">Use Kalman Filter instead of Savitzky-Golay:</label>
-	<input type="checkbox" id="useKalman" checked>  <!-- Default to on, or off as preferred -->
-
-	<label for="kalmanOrder">Kalman Model Order (2-4; higher = smoother maneuvers):</label>
-	<input type="number" id="kalmanOrder" value="3" min="2" max="4" step="1">
-
-	<label for="processNoise">Kalman Process Noise (Q; 1e-6 to 1e-2; higher for agile flight):</label>
-	<input type="number" id="processNoise" value="0.00001" min="0.000001" max="0.01" step="0.000001">
-
-	<label for="measurementNoise">Kalman Measurement Noise (R; ~7.62m for alt, 0.0001° for pos):</label>
-	<input type="number" id="measurementNoise" value="7.62" min="0.1" step="0.1">
-
-    <label for="windowLength">Savitzky-Golay Window Length (odd, ≥7):</label>
-    <input type="number" id="windowLength" value="21" min="7" step="2">
-
-    <label for="polyOrder">Savitzky-Golay Polynomial Order:</label>
-    <input type="number" id="polyOrder" value="5" min="2" max="6">
-
-    <label for="timeStep">Resampling Time Step (seconds):</label>
-    <input type="number" id="timeStep" value="1" min="0.1" step="0.1">
+	<h4>Smoothing algorithm</h4>
+	<label for="methodSelect">Select Smoothing Method:</label>
+    <select id="methodSelect">
+	    <option value="kalman">Kalman Filter</option>
+        <option value="savgol">Savitzky-Golay</option>
+		<option value="eilwhit" selected>Eilers-Whittaker</option>
+        <option value="none">None</option>
+    </select>
 	
+	<div id="eilwhitSection" class="section">
+	    <h4>Eilers-Whittaker Parameters</h4>
+		<label for="eilwhitLambda">Lambda (higher is smoother)</label>
+		<input type="number" id="eilwhitLambda" value="10000000">
+	</div>
+	
+	<div id="kalmanSection" class="section hidden">
+	    <h4>Kalman Filter Parameters</h4>
+		<label for="kalmanOrder">Kalman Model Order (2-4; higher = smoother maneuvers):</label>
+		<input type="number" id="kalmanOrder" value="3" min="2" max="4" step="1">
+
+		<label for="processNoise">Kalman Process Noise (Q; 1e-6 to 1e-2; higher for agile flight):</label>
+		<input type="number" id="processNoise" value="0.00001" min="0.000001" max="0.01" step="0.000001">
+
+		<label for="measurementNoise">Kalman Measurement Noise (R; ~7.62m for alt, 0.0001° for pos):</label>
+		<input type="number" id="measurementNoise" value="7.62" min="0.1" step="0.1">
+	</div>
+	<div id="savGolSection" class="section hidden">
+	    <h4>Savitzky-Golay Parameters</h4>
+		<label for="windowLength">Savitzky-Golay Window Length (odd, ≥7):</label>
+		<input type="number" id="windowLength" value="21" min="7" step="2">
+
+		<label for="polyOrder">Savitzky-Golay Polynomial Order:</label>
+		<input type="number" id="polyOrder" value="5" min="2" max="6">
+	</div>
+	
+	<div id="noneSection" class="section hidden">
+        <h4>No Smoothing Selected</h4>
+        <p>No additional parameters needed.</p>
+    </div>
+	
+	<h4>Low Pass Filtering</h4>
+	<p>Apply simple low pass filtering hoping to remove wobbles, not really physical, just makes it look better</p>
+	<label for="lowPassPosWindow">Position Low-Pass Window (seconds, 0 = disable):</label>
+    <input type="number" id="lowPassPosWindow" value="0" min="0" step="1">
+	<label for="lowPassPitchWindow">Pitch Low-Pass Window (seconds, 0 = disable):</label>
+    <input type="number" id="lowPassPitchWindow" value="1" min="0" step="1">
+	<label for="lowPassRollWindow">Roll Low-Pass Window (seconds, 0 = disable):</label>
+    <input type="number" id="lowPassRollWindow" value="2" min="0" step="1">
+	<label for="lowPassHeadingWindow">Heading Low-Pass Window (seconds, 0 = disable):</label>
+    <input type="number" id="lowPassHeadingWindow" value="1" min="0" step="1">
+	<label for="rollRateLimit">Hard Roll Rate Limit deg/sec:</label>
+    <input type="number" id="rollRateLimit" value="60" min="0" step="1">
+	
+	
+	<h4>Input Filtering</h4>
 	<label for="dedupeTolerance">Point Deduplication Threshold (milliseconds):</label>
     <input type="number" id="dedupeTolerance" value="50" min="0" step="10">
 	
-	<label for="lowPassWindow">Final Low-Pass Window (seconds, 0 = disable):</label>
-    <input type="number" id="lowPassWindow" value="2" min="0" step="1">
+    <label for="timeStep">Resampling Time Step (seconds):</label>
+    <input type="number" id="timeStep" value="1" min="0.1" step="0.1">
+	
+	<label for="zeroAlts">Replace Zero Altitudes With:</label>
+    <input type="number" id="zeroAlts" value="0">
 
+    <h4>Time Range Selection</h4>
 	<p>Process only a portion of the track. Useful for focusing on takeoff, landing, or specific maneuvers.</p>
 
     <label for="startOffsetSec">Start offset (seconds from beginning, default 0):</label>
@@ -67,6 +108,7 @@
 
     <label for="lastSeconds">Alternatively, process only the last N seconds (overrides offsets above):</label>
     <input type="number" id="lastSeconds" value="" placeholder="e.g. 300 for last 5 minutes" min="60" step="10">
+	
 
     <p><small>Note: Run a full-track process first to see total duration in the Debug section if using offsets.</small></p>
 	
@@ -129,17 +171,84 @@
         let globalNewTimes = null;
 		let globalRawPoints = null;
 		let chartInstances = {};
+		
+		const selectSmoother = document.getElementById('methodSelect');
+        const sections = {
+            savgol: document.getElementById('savGolSection'),
+            kalman: document.getElementById('kalmanSection'),
+			eilwhit: document.getElementById('eilwhitSection'),
+            none: document.getElementById('noneSection')
+        };
+		
+		selectSmoother.addEventListener('change', function() {
+            // Hide all sections
+            Object.values(sections).forEach(sec => sec.classList.add('hidden'));
+            
+            // Show the selected section
+            const selectedSection = sections[this.value];
+            if (selectedSection) {
+                selectedSection.classList.remove('hidden');
+            }
+        });
+		
+		// Trigger initial state (for the selected option)
+        const initialValue = selectSmoother.value;
+        if (initialValue && sections[initialValue]) {
+            sections[initialValue].classList.remove('hidden');
+        }
 
-		// Kalman Filter for 1D (per lat/lon/alt)
-		function KalmanFilter1D(Q = 1e-5, R = 7.62, order = 2) {
+
+		function KalmanFilter1D(Q = 1e-5, R = 7.62, order = 2, times = [], values = []) {
 			this.order = order;
 			this.n = order + 1;
 			this.Q = Q;
 			this.R = R;
-			this.dt = 1.0;
-			this.x = math.zeros(this.n, 1);
-			this.P = math.multiply(math.identity(this.n), 1000);
+			this.dt = 1.0;  // Default, overridden later
+
+			// Derive initial state from data (use first min(5, length) points)
+			const initPoints = Math.min(5, times.length);
+			if (initPoints < 2) {
+				// Fallback for very short data
+				this.x = math.zeros(this.n, 1);
+				this.x.set([0, 0], values[0] || 0);  // Position only
+			} else {
+				// Least-squares poly fit to estimate derivatives
+				const t_init = times.slice(0, initPoints).map(t => (t - times[0]) / 1000);  // Normalized seconds
+				const y_init = values.slice(0, initPoints);
+
+				// Build Vandermonde matrix for poly fit (degree = order)
+				const V = math.zeros(initPoints, this.n);
+				for (let i = 0; i < initPoints; i++) {
+					let pow = 1;
+					for (let j = 0; j < this.n; j++) {
+						V.set([i, j], pow);
+						pow *= t_init[i];
+					}
+				}
+
+				// Force y as 2D column vector
+				const y_matrix = math.matrix(y_init).reshape([initPoints, 1]);
+
+				// Solve coeffs = pinv(V) * y (coeffs[0] = pos, coeffs[1] = vel / 1!, coeffs[2] = accel / 2!, etc.)
+				const coeffs = math.multiply(math.pinv(V), y_matrix);
+
+				// Convert to state: x[k] = coeffs[k] * k! (for derivative scaling)
+				this.x = math.zeros(this.n, 1);
+				let fact = 1;
+				for (let k = 0; k < this.n; k++) {
+					this.x.set([k, 0], coeffs.get([k, 0]) * fact);
+					fact *= (k + 1);  // (k+1)! for next
+				}
+			}
+
+			// Initial P: High uncertainty, scaled higher for higher derivatives
+			this.P = math.identity(this.n);
+			for (let i = 0; i < this.n; i++) {
+				this.P.set([i, i], Math.pow(10, 3 + i));  // e.g., 1e3 for pos, 1e4 for vel, up to 1e7 for snap
+			}
 		}
+
+
 		
 		KalmanFilter1D.prototype.getA = function() {
 			const A = math.identity(this.n);
@@ -182,7 +291,7 @@
 		// Smooth function (forward + RTS backward)
 		function kalmanSmooth(times, values, Q = 1e-5, R = 7.62, order = 2) {
 			const n_points = times.length;
-			const kf = new KalmanFilter1D(Q, R, order);
+			const kf = new KalmanFilter1D(Q, R, order, times, values);
 			const forward_x = new Array(n_points);
 			const forward_P = new Array(n_points);
 			for (let i = 0; i < n_points; i++) {
@@ -302,6 +411,386 @@
             return smoothed;
         }
 
+
+		/**
+		 * 1D Eilers-Whittaker smoothing (penalized least squares)
+		 * @param {number[]} values      - y values
+		 * @param {number[]} times       - corresponding times (used only for sorting + optional interpolation)
+		 * @param {number[]} weights     - per-point weights (w_i > 0; set w_i = 0 for interpolation points)
+		 * @param {number}   lambda      - smoothing parameter (higher = smoother; typical 1e4–1e10)
+		 * @param {number}   order       - difference order (1 or 2; default 2)
+		 * @param {number[]} [outputTimes] - optional target times for interpolation (if provided, returns values at these times)
+		 * @returns {number[]} smoothed values (same length as input or outputTimes)
+		 */
+		 function eilersWhittaker1D(values, times, weights, lambda, order = 2, outputTimes = null) {
+			if (values.length !== times.length || values.length !== weights.length) {
+				throw new Error("values, times, and weights must have the same length");
+			}
+			if (lambda < 0) lambda = 0;
+			if (order !== 2) throw new Error("Only order=2 supported in fast version (for tridiagonal order=1, ask for separate impl)");
+
+			// Combine data + interpolation points if requested
+			let allTimes = times.slice();
+			let allValues = values.slice();
+			let allWeights = weights.slice();
+
+			if (outputTimes) {
+				const timeSet = new Set(times.map(t => t));
+				for (const t of outputTimes) {
+					if (!timeSet.has(t)) {
+						allTimes.push(t);
+						allValues.push(0);           // dummy value
+						allWeights.push(0);          // w=0 → pure interpolation
+					}
+				}
+			}
+
+			// Sort by time
+			const n = allTimes.length;
+			const idx = allTimes.map((_, i) => i).sort((a, b) => allTimes[a] - allTimes[b]);
+			const sortedTimes = idx.map(i => allTimes[i]);
+			const y = idx.map(i => allValues[i]);
+			const w = idx.map(i => allWeights[i]);
+
+			if (n < order + 1) return y.slice();   // fallback
+
+			// Compute spacings h (assume strictly increasing times)
+			const h = new Array(n-1);
+			for (let i = 0; i < n-1; i++) {
+				h[i] = sortedTimes[i+1] - sortedTimes[i];
+				if (h[i] <= 0) throw new Error("Times must be strictly increasing");
+			}
+
+			// Build DtD bands in O(n): diag[0..n-1], sup1[0..n-2], sup2[0..n-3]
+			const DtD_diag = new Array(n).fill(0);
+			const DtD_sup1 = new Array(n-1).fill(0);
+			const DtD_sup2 = new Array(n-2).fill(0);
+
+			for (let k = 0; k < n-2; k++) {
+				const h1 = h[k];
+				const h2 = h[k+1];
+				const s = h1 + h2;
+				const d0 = 2 / (h1 * s);
+				const d1 = -2 * (h1 + h2) / (h1 * h2 * s);
+				const d2 = 2 / (h2 * s);
+
+				DtD_diag[k] += d0 * d0;
+				DtD_diag[k+1] += d1 * d1;
+				DtD_diag[k+2] += d2 * d2;
+
+				DtD_sup1[k] += d0 * d1;
+				DtD_sup1[k+1] += d1 * d2;
+
+				DtD_sup2[k] += d0 * d2;
+			}
+
+			// Build pentadiagonal bands for A = W + lambda DtD
+			const aa = new Array(n-2);  // sub2 A[i][i-2] for i=2..n-1 → aa[0] = A[2][0]
+			for (let i = 0; i < n-2; i++) aa[i] = lambda * DtD_sup2[i];  // since sub2 = sup2 (symmetric)
+
+			const bb = new Array(n-1);  // sub1 A[i][i-1] for i=1..n-1 → bb[0] = A[1][0]
+			for (let i = 0; i < n-1; i++) bb[i] = lambda * DtD_sup1[i];
+
+			const cc = new Array(n);    // diag
+			for (let i = 0; i < n; i++) cc[i] = w[i] + lambda * DtD_diag[i];
+
+			const dd = new Array(n-1);  // sup1
+			for (let i = 0; i < n-1; i++) dd[i] = lambda * DtD_sup1[i];
+
+			const ee = new Array(n-2);  // sup2
+			for (let i = 0; i < n-2; i++) ee[i] = lambda * DtD_sup2[i];
+
+			// RHS: W y
+			const rhs = new Array(n);
+			for (let i = 0; i < n; i++) rhs[i] = w[i] * y[i];
+
+			// Solve A z = rhs using banded LU (O(n))
+			const z = solvePentadiagonal(aa, bb, cc, dd, ee, rhs);
+
+			// Map back to original order
+			const result = new Array(idx.length);
+			for (let i = 0; i < n; i++) result[idx[i]] = z[i];
+
+			// If outputTimes were given, extract only those
+			if (outputTimes) {
+				const outMap = new Map();
+				allTimes.forEach((t, i) => outMap.set(t, result[i]));
+				return outputTimes.map(t => outMap.get(t) ?? 0);  // fallback if missing
+			}
+
+			return result;
+		}
+
+		/**
+		 * Solves pentadiagonal system A x = rhs using LU decomposition (O(n), no pivoting - assumes SPD)
+		 * Bands: aa[sub2 0..n-3], bb[sub1 0..n-2], cc[diag 0..n-1], dd[sup1 0..n-2], ee[sup2 0..n-3]
+		 * Modifies cc, dd, ee in place!
+		 * @returns {number[]} solution x
+		 */
+		function solvePentadiagonal(aa, bb, cc, dd, ee, rhs) {
+			const n = cc.length;
+			if (n < 3) {  // fallback for small n
+				const A = math.zeros(n, n);
+				for (let i = 0; i < n; i++) A.set([i, i], cc[i]);
+				for (let i = 0; i < n-1; i++) {
+					A.set([i, i+1], dd[i]);
+					A.set([i+1, i], bb[i]);
+				}
+				for (let i = 0; i < n-2; i++) {
+					A.set([i, i+2], ee[i]);
+					A.set([i+2, i], aa[i]);
+				}
+				return math.lusolve(A, rhs).toArray().map(row => row[0]);
+			}
+
+			const f = new Array(n).fill(0);
+			const g = new Array(n).fill(0);
+
+			// LU decomposition (elimination phase)
+			// i=0
+			// cc[0], dd[0], ee[0] unchanged
+
+			// i=1
+			f[1] = bb[0] / cc[0];
+			cc[1] -= f[1] * dd[0];
+			dd[1] -= f[1] * ee[0];
+			// ee[1] unchanged
+
+			// i=2 to n-1
+			for (let i = 2; i < n; i++) {
+				g[i] = aa[i-2] / cc[i-2];
+				f[i] = (bb[i-1] - g[i] * dd[i-2]) / cc[i-1];
+				cc[i] -= g[i] * ee[i-2] + f[i] * dd[i-1];
+				if (i < n-1) dd[i] -= f[i] * ee[i-1];
+				// ee[i] unchanged if exists
+			}
+
+			// Forward substitution: solve L y = rhs
+			const y = new Array(n);
+			y[0] = rhs[0];
+			y[1] = rhs[1] - f[1] * y[0];
+			for (let i = 2; i < n; i++) {
+				y[i] = rhs[i] - g[i] * y[i-2] - f[i] * y[i-1];
+			}
+
+			// Back substitution: solve U x = y
+			const x = new Array(n);
+			x[n-1] = y[n-1] / cc[n-1];
+			x[n-2] = (y[n-2] - dd[n-2] * x[n-1]) / cc[n-2];
+			for (let i = n-3; i >= 0; i--) {
+				x[i] = (y[i] - ee[i] * x[i+2] - dd[i] * x[i+1]) / cc[i];
+			}
+
+			return x;
+		}
+
+		function eilersWhittaker1D_old(values, times, weights, lambda, order = 2, outputTimes = null) {
+			if (values.length !== times.length || values.length !== weights.length) {
+				throw new Error("values, times, and weights must have the same length");
+			}
+			if (lambda < 0) lambda = 0;
+			if (order !== 1 && order !== 2) throw new Error("order must be 1 or 2");
+
+			// Combine data + interpolation points if requested
+			let allTimes = times.slice();
+			let allValues = values.slice();
+			let allWeights = weights.slice();
+
+			if (outputTimes) {
+				const timeSet = new Set(times.map(t => t));
+				for (const t of outputTimes) {
+					if (!timeSet.has(t)) {
+						allTimes.push(t);
+						allValues.push(0);           // dummy value
+						allWeights.push(0);          // w=0 → pure interpolation
+					}
+				}
+			}
+
+			// Sort by time
+			const idx = allTimes.map((_, i) => i).sort((a, b) => allTimes[a] - allTimes[b]);
+			const y = idx.map(i => allValues[i]);
+			const w = idx.map(i => allWeights[i]);
+			const n = y.length;
+
+			if (n < order + 1) return y.slice();   // fallback
+
+			// Build difference matrix D ((n-order) × n)
+			let D = math.zeros(n - order, n);
+			if (order === 2) {
+				for (let i = 0; i < n - 2; i++) {
+					D.set([i, i],   1);
+					D.set([i, i+1], -2);
+					D.set([i, i+2], 1);
+				}
+			} else { // order 1
+				for (let i = 0; i < n - 1; i++) {
+					D.set([i, i],   -1);
+					D.set([i, i+1],  1);
+				}
+			}
+
+			// Matrices
+			const W = math.diag(w);
+			const yMat = math.matrix(y.map(v => [v]));                 // n × 1
+			const Wy = math.multiply(W, yMat);
+
+			const DtD = math.multiply(math.transpose(D), D);
+			const A = math.add(W, math.multiply(lambda, DtD));
+
+			// Solve A z = W y
+			let zMat;
+			try {
+				zMat = math.lusolve(A, Wy);
+			} catch (e) {
+				// Fallback: add tiny ridge if singular
+				const ridge = math.multiply(1e-8, math.identity(n));
+				zMat = math.lusolve(math.add(A, ridge), Wy);
+			}
+
+			const z = zMat.toArray().map(row => row[0]);
+
+			// Map back to original (or requested) order
+			const result = new Array(idx.length);
+			for (let i = 0; i < idx.length; i++) result[idx[i]] = z[i];
+
+			// If outputTimes were given, extract only those
+			if (outputTimes) {
+				const outMap = new Map();
+				allTimes.forEach((t, i) => outMap.set(t, result[i]));
+				return outputTimes.map(t => outMap.get(t));
+			}
+
+			return result;
+		}
+        // ────────────────────────────────────────────────
+        // Quintic Spline (not-a-knot boundary conditions)
+        // ────────────────────────────────────────────────
+        function quinticSpline(times, values) {
+            const n = times.length;
+            if (n < 6) throw new Error("Need at least 6 points for quintic spline with not-a-knot boundaries.");
+
+            const m = n - 1;
+            const N = 5 * m;
+            const A = numeric.rep([N, N], 0);
+            const b = new Array(N).fill(0);
+
+            const h = new Array(m);
+            const dy = new Array(m);
+            for (let i = 0; i < m; i++) {
+                h[i] = times[i + 1] - times[i];
+                dy[i] = values[i + 1] - values[i];
+            }
+
+            // Right interpolation equations
+            for (let i = 0; i < m; i++) {
+                const row = i;
+                const col_base = 5 * i;
+                A[row][col_base + 0] = h[i];
+                A[row][col_base + 1] = Math.pow(h[i], 2);
+                A[row][col_base + 2] = Math.pow(h[i], 3);
+                A[row][col_base + 3] = Math.pow(h[i], 4);
+                A[row][col_base + 4] = Math.pow(h[i], 5);
+                b[row] = dy[i];
+            }
+
+            // Continuity equations for derivatives 1 to 4
+            const num_interior = m - 1;
+            const row_start_der = [m, m + num_interior, m + 2 * num_interior, m + 3 * num_interior];
+            for (let der = 0; der < 4; der++) {
+                const row_base = row_start_der[der];
+                for (let j = 0; j < num_interior; j++) {
+                    const row = row_base + j;
+                    const i = j; // left segment index
+                    const hh = h[i];
+                    const col_left = 5 * i;
+                    const col_right = 5 * (i + 1);
+
+                    if (der === 0) { // 1st derivative
+                        A[row][col_left + 0] = 1;
+                        A[row][col_left + 1] = 2 * hh;
+                        A[row][col_left + 2] = 3 * Math.pow(hh, 2);
+                        A[row][col_left + 3] = 4 * Math.pow(hh, 3);
+                        A[row][col_left + 4] = 5 * Math.pow(hh, 4);
+                        A[row][col_right + 0] = -1;
+                    } else if (der === 1) { // 2nd derivative
+                        A[row][col_left + 1] = 2;
+                        A[row][col_left + 2] = 6 * hh;
+                        A[row][col_left + 3] = 12 * Math.pow(hh, 2);
+                        A[row][col_left + 4] = 20 * Math.pow(hh, 3);
+                        A[row][col_right + 1] = -2;
+                    } else if (der === 2) { // 3rd derivative
+                        A[row][col_left + 2] = 6;
+                        A[row][col_left + 3] = 24 * hh;
+                        A[row][col_left + 4] = 60 * Math.pow(hh, 2);
+                        A[row][col_right + 2] = -6;
+                    } else if (der === 3) { // 4th derivative
+                        A[row][col_left + 3] = 24;
+                        A[row][col_left + 4] = 120 * hh;
+                        A[row][col_right + 3] = -24;
+                    }
+                    b[row] = 0;
+                }
+            }
+
+            // Not-a-knot conditions for quintic (force 5th der continuity at first/last two interior points)
+            const row_nak = m + 4 * (m - 1);
+            // f0 - f1 = 0
+            A[row_nak][5 * 0 + 4] = 1;
+            A[row_nak][5 * 1 + 4] = -1;
+            b[row_nak] = 0;
+            // f1 - f2 = 0
+            A[row_nak + 1][5 * 1 + 4] = 1;
+            A[row_nak + 1][5 * 2 + 4] = -1;
+            b[row_nak + 1] = 0;
+            // f_{m-3} - f_{m-2} = 0
+            A[row_nak + 2][5 * (m - 3) + 4] = 1;
+            A[row_nak + 2][5 * (m - 2) + 4] = -1;
+            b[row_nak + 2] = 0;
+            // f_{m-2} - f_{m-1} = 0
+            A[row_nak + 3][5 * (m - 2) + 4] = 1;
+            A[row_nak + 3][5 * (m - 1) + 4] = -1;
+            b[row_nak + 3] = 0;
+
+            // Solve the system
+            const flatCoeffs = numeric.solve(A, b);
+
+            // Group coefficients
+            const coeffs = [];
+            for (let i = 0; i < m; i++) {
+                const base = 5 * i;
+                coeffs.push({
+                    b: flatCoeffs[base],
+                    c: flatCoeffs[base + 1],
+                    d: flatCoeffs[base + 2],
+                    e: flatCoeffs[base + 3],
+                    f: flatCoeffs[base + 4]
+                });
+            }
+
+            return { times, values, coeffs };
+        }
+
+		function evalQuinticSpline(spline, t) {
+            const { times, values, coeffs } = spline;
+            const n = times.length;
+
+            if (t <= times[0]) return values[0];
+            if (t >= times[n - 1]) {
+                // Evaluate last segment at end
+                const i = n - 2;
+                const dt = t - times[i];
+                const { b, c, d, e, f } = coeffs[i];
+                return values[i] + b * dt + c * Math.pow(dt, 2) + d * Math.pow(dt, 3) + e * Math.pow(dt, 4) + f * Math.pow(dt, 5);
+            }
+
+            let i = 0;
+            while (i < n - 1 && t >= times[i + 1]) i++;
+            const dt = t - times[i];
+            const { b, c, d, e, f } = coeffs[i];
+            return values[i] + b * dt + c * Math.pow(dt, 2) + d * Math.pow(dt, 3) + e * Math.pow(dt, 4) + f * Math.pow(dt, 5);
+        }
+
         // ────────────────────────────────────────────────
         // Natural Cubic Spline
         // ────────────────────────────────────────────────
@@ -360,7 +849,7 @@
         }
 
 
-		function applyMovingAverage(data, windowSeconds, timeStepSeconds) {
+		function applyMovingAverage(data, windowSeconds, timeStepSeconds, anchor=true) {
 			if (windowSeconds <= 0) return data.slice();
 
 			// Convert time window to odd number of points for perfect symmetry
@@ -370,7 +859,7 @@
 
 			const half = Math.floor(windowPoints / 2);
 			let smoothed = new Array(data.length);
-
+            
 			for (let i = 0; i < data.length; i++) {
 				let sum = 0;
 				let count = 0;
@@ -382,9 +871,82 @@
 				}
 				smoothed[i] = sum / count;
 			}
+			if(anchor) {
+			    smoothed[0] = data[0];
+				smoothed[data.length-1] = data[data.length-1]
+			}
 			return smoothed;
 		}
+        
+		// applies a moving average to angles using vector averaging
+		function applyMovingAverageAngles(data, windowSeconds, timeStepSeconds, threeSixty=false) {
+			if (windowSeconds <= 0) return data.slice();
 
+			// Convert time window to odd number of points for perfect symmetry
+			let windowPoints = Math.round(windowSeconds / timeStepSeconds);
+			if (windowPoints < 3) windowPoints = 3;
+			if (windowPoints % 2 === 0) windowPoints += 1; // force odd
+
+			const half = Math.floor(windowPoints / 2);
+			let smoothed = new Array(data.length);
+
+			for (let i = 0; i < data.length; i++) {
+				let sin_sum = 0;
+				let cos_sum = 0;
+				let count = 0;
+				const start = Math.max(0, i - half);
+				const end = Math.min(data.length - 1, i + half);
+				for (let j = start; j <= end; j++) {
+				    const angRad = data[j] * Math.PI/180;
+					sin_sum += Math.sin(angRad);
+					cos_sum += Math.cos(angRad);
+					count++;
+				}
+				smoothed[i] = Math.atan2(sin_sum / count,cos_sum / count) * 180 / Math.PI;
+				if(threeSixty && smoothed[i] < 0) {
+				    smoothed[i] += 360;
+				}
+			}
+			return smoothed;
+		}
+		
+		function applyRollRateLimit(data, rollRateLimit, timeStepSeconds,allowNegativeG=true) {
+			if (rollRateLimit <= 0) return data.slice();
+
+            let degreesPerStep = rollRateLimit * timeStepSeconds;
+			
+			// Convert time window to odd number of points for perfect symmetry
+
+			let limited = new Array(data.length);
+            let prevAngle = data[0];
+			
+			for (let i = 0; i < data.length; i++) {
+			    let curAngle = data[i];
+				let delta = curAngle - prevAngle;
+				if(delta > 180) {
+				    delta -= 360;
+				} else if (delta < -180) {
+				    delta += 360;
+				}
+
+                if(Math.abs(delta) > degreesPerStep) {
+				
+				    // negative G check
+				    // sometimes needed for some tracks
+					negativeGDelta = 180 - degreesPerStep;
+				    if(allowNegativeG && (Math.abs(delta) > negativeGDelta)) {
+						delta = delta - 180*Math.sign(delta);
+					} else {
+				        delta = degreesPerStep * Math.sign(delta);
+					}
+				}
+				prevAngle += delta;
+				limited[i] = prevAngle;
+			}
+			return limited;
+		}
+		
+		
 
 		// For resampling, use linear interp on smoothed points (less wobble)
 		function linearInterp(times, values, newT) {
@@ -419,7 +981,7 @@
 			
 			try {
 				// Step 1: Read file (asynchronous)
-				const kmlText = await new Promise((resolve, reject) => {
+				const inputText = await new Promise((resolve, reject) => {
 					const reader = new FileReader();
 					reader.onload = (e) => resolve(e.target.result);
 					reader.onerror = reject;
@@ -427,26 +989,51 @@
 				});
 
 				await yieldToUI(() => statusText.textContent = 'Parsing KML and extracting points...');
-
-				// Step 2: Parse KML
-				const parser = new DOMParser();
-				const doc = parser.parseFromString(kmlText, "text/xml");
-
-				const tracks = doc.getElementsByTagNameNS("http://www.google.com/kml/ext/2.2", "Track");
-				if (tracks.length === 0) throw new Error('No gx:Track found.');
-
+                //
+				
+				// Step 2: Parse Data
+				// try CSV first
 				let points = [];
-				for (const track of tracks) {
-					const whens  = track.getElementsByTagName("when");
-					const coords = track.getElementsByTagNameNS("http://www.google.com/kml/ext/2.2", "coord");
-					for (let i = 0; i < whens.length; i++) {
-						const [lon, lat, altStr] = coords[i].textContent.trim().split(/\s+/);
-						points.push({
-							time: new Date(whens[i].textContent).getTime(),
-							lat: parseFloat(lat),
-							lon: parseFloat(lon),
-							alt: parseFloat(altStr) || 0
-						});
+				const lines = inputText.split('\n').map(line => line.trim()).filter(line => line);
+				if(lines.length > 0) {
+				    const firstRow = lines[0].split(',').map(col => col.trim().toLowerCase());
+					if (firstRow.length >= 4 && firstRow[0] === 'time' && firstRow[1] === 'lon' && firstRow[2] === 'lat' && firstRow[3] === 'alt') {
+						// looks like we have a CSV file
+						for (let i = 1; i < lines.length; i++) {
+							const row = lines[i].split(',').map(col => col.trim());
+							if (row.length < 4) continue;
+							const timeStr = row[0];
+							const lon = parseFloat(row[1]);
+							const lat = parseFloat(row[2]);
+							const alt = parseFloat(row[3]) || 0;
+							if (isNaN(lon) || isNaN(lat) || isNaN(alt)) continue;
+							const time = new Date(timeStr).getTime();
+							if (isNaN(time)) continue;
+							points.push({ time, lon, lat, alt });
+						}
+					}
+				}
+				// if we still have no data, try KML
+				if(points.length == 0) {
+					const parser = new DOMParser();
+					const doc = parser.parseFromString(inputText, "text/xml");
+
+					const tracks = doc.getElementsByTagNameNS("http://www.google.com/kml/ext/2.2", "Track");
+					if (tracks.length === 0) throw new Error('No gx:Track found.');
+
+
+					for (const track of tracks) {
+						const whens  = track.getElementsByTagName("when");
+						const coords = track.getElementsByTagNameNS("http://www.google.com/kml/ext/2.2", "coord");
+						for (let i = 0; i < whens.length; i++) {
+							const [lon, lat, altStr] = coords[i].textContent.trim().split(/\s+/);
+							points.push({
+								time: new Date(whens[i].textContent).getTime(),
+								lat: parseFloat(lat),
+								lon: parseFloat(lon),
+								alt: parseFloat(altStr) || 0
+							});
+						}
 					}
 				}
 
@@ -471,43 +1058,48 @@
 					}
 				}
 				if (current !== null) dedupePoints.push(current);
-                globalRawPoints = points;
+                globalRawPoints = points; // store for later
 				
 				points = dedupePoints;  // replace original array
 				if (points.length < 4) throw new Error('Too few unique points after deduplication.');
 				await yieldToUI(() => statusText.textContent = 'Fixing zero altitudes...');
 
-				let times = points.map(p => p.time);
-				let lats = points.map(p => p.lat);
-				let lons = points.map(p => p.lon);
-				let alts = points.map(p => p.alt);
 
 				// ────────────────────────────────────────────────
 				// Fix zero altitudes by propagating nearest non-zero value
 				// (forward then backward pass – handles zeros at start, end, or middle)
+				// or allow the user to set a zero point, for example if the field elevation is known
 				// ────────────────────────────────────────────────
-				let zeroCount = 0;
-				const filledAlts = [...alts];  // work on a copy to preserve original if needed
+				const zeroAlts  = parseFloat(document.getElementById('zeroAlts').value);
+				if(zeroAlts == 0) {
+					let zeroCount = 0;
 
-				// Forward pass: replace 0 with last known non-zero
-				let lastNonZero = null;
-				for (let i = 0; i < filledAlts.length; i++) {
-					if (filledAlts[i] !== 0) {
-						lastNonZero = filledAlts[i];
-					} else if (lastNonZero !== null) {
-						filledAlts[i] = lastNonZero;
-						zeroCount++;
+					// Forward pass: replace 0 with last known non-zero
+					let lastNonZero = null;
+					for (let i = 0; i < points.length; i++) {
+						if (points[i].alt !== 0) {
+							lastNonZero = points[i].alt;
+						} else if (lastNonZero !== null) {
+							points[i].alt = lastNonZero;
+							zeroCount++;
+						}
 					}
-				}
 
-				// Backward pass: fill any remaining leading zeros with next non-zero
-				let nextNonZero = null;
-				for (let i = filledAlts.length - 1; i >= 0; i--) {
-					if (filledAlts[i] !== 0) {
-						nextNonZero = filledAlts[i];
-					} else if (nextNonZero !== null) {
-						filledAlts[i] = nextNonZero;
-						zeroCount++;
+					// Backward pass: fill any remaining leading zeros with next non-zero
+					let nextNonZero = null;
+					for (let i = points.length - 1; i >= 0; i--) {
+						if (points[i].alt !== 0) {
+							nextNonZero = points[i].alt;
+						} else if (nextNonZero !== null) {
+							points[i].alt = nextNonZero;
+							zeroCount++;
+						}
+					}
+				} else {
+				    for (let i = 0; i < points.length; i++) {
+					    if(points[i].alt == 0) {
+							points[i].alt = zeroAlts;
+						}
 					}
 				}
 
@@ -560,13 +1152,29 @@
 				
                 // === end of time filtering ===
 				
-
-				const useKalman = document.getElementById('useKalman').checked;
-				await yieldToUI(() => statusText.textContent = 'Applying smoothing... ${useKalman}');
+				
+				
+				// for interpolation we need to build out our timestamps for output datasets
+				// this might be needed for the smoother method
+				const timeStepSec  = parseFloat(document.getElementById('timeStep').value);
+				const tMin = times[0], tMax = times[times.length-1];
+				const newTimes = [];
+				for (let t = tMin; t <= tMax + 1e-6; t += timeStepSec * 1000) {
+					newTimes.push(t);
+				}
+				if (newTimes.length === 0 || newTimes[newTimes.length-1] < tMax - 1e-3) {
+					newTimes.push(tMax);
+				}
+				let finalLats = [];
+                let finalLons = [];
+                let finalAlts = [];
+				
+				const smootherMethod = document.getElementById('methodSelect').value;
+				await yieldToUI(() => statusText.textContent = `Applying smoothing... ${smootherMethod}`);
 				
 			
 
-				if (useKalman) {
+				if (smootherMethod=='kalman') {
 					//await yieldToUI(() => statusText.textContent = 'Applying Kalman smoothing...');
 					const order = parseInt(document.getElementById('kalmanOrder').value) || 3;
 					const Q = parseFloat(document.getElementById('processNoise').value) || 0.00001;
@@ -577,7 +1185,7 @@
 					lats = kalmanSmooth(times, lats, Q, R_pos, order);
 					lons = kalmanSmooth(times, lons, Q, R_pos, order);
 					alts = kalmanSmooth(times, alts, Q, R_alt, order);
-				} else {
+				} else if (smootherMethod=='savgol'){
 					// Existing SG code
 					//await yieldToUI(() => statusText.textContent = 'Applying Savistky-Golay smoothing...');
 					const windowLength = parseInt(document.getElementById('windowLength').value);
@@ -585,51 +1193,62 @@
 					lats = savgol(lats, times, windowLength, polyOrder);
 					lons = savgol(lons, times, windowLength, polyOrder);
 					alts = savgol(alts, times, windowLength, polyOrder);
+				} else if(smootherMethod =='eilwhit') {
+				    // this performs its own interpolation so do that here
+					// Simple smoothing (replace your savgol calls)
+					
+					const lambda = parseInt(document.getElementById('eilwhitLambda').value) || 10E7;
+					const order  = 2;
+					await yieldToUI(() => statusText.textContent = 'Applying eilersWhittaker/Latitudes smoothing...');
+					lats = eilersWhittaker1D(lats, times, new Array(lats.length).fill(1), lambda, order,newTimes);
+					await yieldToUI(() => statusText.textContent = 'Applying eilersWhittaker/Longitudes smoothing...');
+					lons = eilersWhittaker1D(lons, times, new Array(lons.length).fill(1), lambda, order,newTimes);
+					await yieldToUI(() => statusText.textContent = 'Applying eilersWhittaker/Altitudes smoothing...');
+					alts = eilersWhittaker1D(alts, times, new Array(alts.length).fill(1), lambda, order,newTimes);
+					finalLats = lats;
+                    finalLons = lons;
+                    finalAlts = alts;					
 				}
 
-				
-				await yieldToUI(() => statusText.textContent = 'Fitting cubic splines...');
+                // if we haven't generated the final interpolated data, do that now using splines
+				if(finalLats.length == 0) {
+					await yieldToUI(() => statusText.textContent = 'Fitting splines...');
+					// Step 5: Fit splines for interpolation
+					const splineLat = naturalCubicSpline(times, lats);
+					const splineLon = naturalCubicSpline(times, lons);
+					const splineAlt = naturalCubicSpline(times, alts);					
+					// Quintic splines might be better, but take a long time
+					//const splineLat = quinticSpline(times, lats);
+					//await yieldToUI(() => statusText.textContent = 'Fitting Lon splines...');
+					//const splineLon = quinticSpline(times, lons);
+					//await yieldToUI(() => statusText.textContent = 'Fitting Alt splines...');
+					//const splineAlt = quinticSpline(times, alts);
+					await yieldToUI(() => statusText.textContent = 'Resampling at regular intervals...');
+					// Step 6: Resample to constant timestep, avoids problems with attitude derivation
 
-
-				// Step 5: Fit splines for interpolation
-				const splineLat = naturalCubicSpline(times, lats);
-				const splineLon = naturalCubicSpline(times, lons);
-				const splineAlt = naturalCubicSpline(times, alts);
-
-				await yieldToUI(() => statusText.textContent = 'Resampling at regular intervals...');
-
-				// Step 6: Resample to constant timestep, avoids problems with attitude derivation
-				const timeStepSec  = parseFloat(document.getElementById('timeStep').value);
-				const tMin = times[0], tMax = times[times.length-1];
-				const newTimes = [];
-				for (let t = tMin; t <= tMax + 1e-6; t += timeStepSec * 1000) {
-					newTimes.push(t);
+					let resampledLats = newTimes.map(t => evalCubicSpline(splineLat, t));
+					let resampledLons = newTimes.map(t => evalCubicSpline(splineLon, t));
+					let resampledAlts = newTimes.map(t => evalCubicSpline(splineAlt, t));
+					
+					//let resampledLats = newTimes.map(t => evalQuinticSpline(splineLat, t));
+					//let resampledLons = newTimes.map(t => evalQuinticSpline(splineLon, t));
+					//let resampledAlts = newTimes.map(t => evalQuinticSpline(splineAlt, t));
+					finalLats = resampledLats;
+                    finalLons = resampledLons;
+                    finalAlts = resampledAlts;
 				}
-				if (newTimes.length === 0 || newTimes[newTimes.length-1] < tMax - 1e-3) {
-					newTimes.push(tMax);
-				}
-
-				let resampledLats = newTimes.map(t => evalCubicSpline(splineLat, t));
-				let resampledLons = newTimes.map(t => evalCubicSpline(splineLon, t));
-				let resampledAlts = newTimes.map(t => evalCubicSpline(splineAlt, t));
-
-				// === NEW: Final low-pass moving average ===
+				// === Final low-pass moving average to positions, can sometimes help? ===
                 await yieldToUI(() => statusText.textContent = 'Applying final low-pass moving average...');
 				
-				const lowPassWindowSec = parseFloat(document.getElementById('lowPassWindow').value) || 0;			
+				const lowPassPosWindowSec = parseFloat(document.getElementById('lowPassPosWindow').value) || 0;			
 
-                let finalLats = resampledLats;
-                let finalLons = resampledLons;
-                let finalAlts = resampledAlts;
-
-
-                if (lowPassWindowSec > 0) {
-                    finalLats = applyMovingAverage(resampledLats, lowPassWindowSec, timeStepSec);
-                    finalLons = applyMovingAverage(resampledLons, lowPassWindowSec, timeStepSec);
-                    finalAlts = applyMovingAverage(resampledAlts, lowPassWindowSec, timeStepSec);
+                if (lowPassPosWindowSec > 0) {
+                    finalLats = applyMovingAverage(finalLats, lowPassPosWindowSec, timeStepSec);
+                    finalLons = applyMovingAverage(finalLons, lowPassPosWindowSec, timeStepSec);
+                    finalAlts = applyMovingAverage(finalAlts, lowPassPosWindowSec, timeStepSec);
 
                     // Calculate actual window size used for debug info
-                    let windowPoints = Math.round(lowPassWindowSec / timeStepSec);
+                    let windowPoints = Math.round(lowPassPosWindowSec / timeStepSec);
                     if (windowPoints < 3) windowPoints = 3;
                     if (windowPoints % 2 === 0) windowPoints += 1;
                     debugExtra = `\nFinal moving average applied: ~${lowPassWindowSec}s window (${windowPoints} points)\n`;
@@ -644,110 +1263,140 @@
 				await yieldToUI(() => statusText.textContent = 'Computing velocity, heading, pitch, roll...');
 
 				// Step 7: Derived quantities (the long loop)
-				const velocities = [0];
-				const accelerations = [0];
-				const headings = [0];
-				const pitches = [0];
-				const rolls = [0];
-				const R = 6371000;
+				const velocities = [];
+				let headings = [];
+				let pitches = [];
+				let rolls = [];
+				const vectors = [];
+				// second differential
+				const accelerations = []; 
+
+				const R = 6371000; // radius of earth in meters
 				const g = 9.81;
 				
 				let debug_samples = "\nDebug Samples\n";
 				for (let i = 1; i < newTimes.length; i++) {
 					// ... your full derived quantities loop here (unchanged) ...
                    const dt = (newTimes[i] - newTimes[i-1]) / 1000;
-                    if (dt < 1e-6) {
-                        velocities.push(velocities[i-1] || 0);
-                        accelerations.push(0);
-                        headings.push(headings[i-1]);
-                        pitches.push(0);
-                        rolls.push(0);
-                        continue;
-                    }
 
 					const prev = {lat: finalLats[i-1], lon: finalLons[i-1], alt: finalAlts[i-1]};
                     const curr = {lat: finalLats[i],   lon: finalLons[i],   alt: finalAlts[i]  };	
+					
 					// for debugging feedback
 					if(i%10 == 0){
 					    debug_samples += `${newTimes[i]}  lat:${curr.lat.toFixed(6)}  lon:${curr.lon.toFixed(6)}  alt:${curr.alt.toFixed(1)}\n`;
 					}
-                    // Distance & velocity
-                    const dLat = (curr.lat - prev.lat) * Math.PI / 180;
-                    const dLon = (curr.lon - prev.lon) * Math.PI / 180;
-                    const a = Math.sin(dLat/2)**2 + Math.cos(prev.lat * Math.PI/180) * Math.cos(curr.lat * Math.PI/180) * Math.sin(dLon/2)**2;
-                    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-                    const horiz = R * c;
-                    const vert = curr.alt - prev.alt;
-                    const dist = Math.sqrt(horiz**2 + vert**2);
-                    const vel = dist / dt;
-                    velocities.push(vel);
-
-                    // Acceleration (simple backward difference)
-                    if (i > 1) {
-                        const prevVel = velocities[i-1];
-                        const acc = (vel - prevVel) / ((newTimes[i] - newTimes[i-2]) / 1000);
-                        accelerations.push(Math.abs(acc));
-                    } else {
-                        accelerations.push(0);
-                    }
-
-                    // Heading
-                    const y = Math.sin(dLon) * Math.cos(curr.lat * Math.PI / 180);
-                    const x = Math.cos(prev.lat * Math.PI / 180) * Math.sin(curr.lat * Math.PI / 180) -
-                              Math.sin(prev.lat * Math.PI / 180) * Math.cos(curr.lat * Math.PI / 180) * Math.cos(dLon);
-                    let heading = Math.atan2(y, x) * 180 / Math.PI;
-                    if (heading < 0) heading += 360;
+                    // Distance & velocity - convert everything to meters
+                    const dLat = R * (curr.lat - prev.lat) * Math.PI /180;
+					let dLon = curr.lon - prev.lon;
+					if(dLon < -180) {
+					    dLon += 360;
+					} else if(dLon > 180) {
+					    dLon -= 360;
+					}
+                    dLon = R * Math.cos((prev.lat + curr.lat) * Math.PI/360) * dLon * Math.PI / 180;
+					
+					const dAlt = curr.alt - prev.alt;
+					
+					let heading = Math.atan2(dLon, dLat) *180/Math.PI;
+					if (heading < 0) heading += 360;
                     if (isNaN(heading)) heading = headings[i-1];
                     headings.push(heading);
-
-                    // Pitch (flight path angle)
-                    let pitch = 0;
-                    if (horiz > 0.1) {
-                        pitch = Math.atan2(vert, horiz) * 180 / Math.PI;
-                    }
-                    if (isNaN(pitch)) pitch = 0;
+					
+					
+					let hSpeed = Math.sqrt(dLon **2 + dLat **2)
+					let vSpeed = curr.alt - prev.alt;
+					let pitch = 0;
+					if(hSpeed > 1) {
+						pitch = Math.atan2(vSpeed, hSpeed) * 180 / Math.PI;
+					}
+					if (isNaN(pitch)) pitch = 0;
                     pitches.push(pitch);
-
-					// ──────────────── Roll / Bank Angle Estimate ────────────────
-					// I have a better way to do this that handles inverted flight, but I'm using this for now
-                    let roll = 0;
-                    if (i > 1) {
-                        let dHeading = headings[i] - headings[i-1];
-                        // Normalize to smallest angle (-180° to +180°)
-                        if (dHeading > 180) dHeading -= 360;
-                        if (dHeading < -180) dHeading += 360;
-
-                        const dT = (newTimes[i] - newTimes[i-1]) / 1000;
-                        if (dT > 0.01 && horiz > 1) {  // avoid tiny/zero segments
-                            const omega = (dHeading * Math.PI / 180) / dT;  // signed rad/s
-							if (Math.abs(omega) < 0.005) {  // ~0.3°/s threshold
-								roll = 0;
-							} else {
-								const V_horiz = horiz / dT;  // m/s
-
-								// Signed centripetal acceleration: V * ω
-								// Then tan(phi) = (V * ω) / g    → phi keeps sign of ω
-								const phi_rad = Math.atan( (V_horiz * omega) / g );
-
-								roll = phi_rad * 180 / Math.PI;
-
-								// Optional: limit to realistic aircraft bank angles
-								// roll = Math.max(-70, Math.min(70, roll));
-							}
-                        }
-                    }
-                    rolls.push(roll);
-					// Optional: yield every ~500 points on very long tracks
+					
+					const vel = Math.sqrt(hSpeed**2 + vSpeed**2) / dt;
+					velocities.push(vel);
+					
+					let mvector = { dlat: dLat, dlon: dLon, dH: vSpeed ,dt: dt};
+					vectors.push(mvector);
 					if (i % 500 === 0) await yieldToUI();
 				}
+				// now we do the second derivative quantities, i.e. accelerations and rolls
+				for (let i = 1 ; i < vectors.length; i++) {
 
+					const prevVec = vectors[i-1];
+					const currVec = vectors[i];
+					const totDt = currVec.dt +  prevVec.dt;
+					// get changes in velocity vectors
+					let latAcc = ((currVec.dlat/currVec.dt) - (prevVec.dlat / prevVec.dt))/totDt;
+					let lonAcc = ((currVec.dlon/currVec.dt) - (prevVec.dlon / prevVec.dt))/totDt;
+					let	hAcc = ((currVec.dH / currVec.dt) - (prevVec.dH / prevVec.dt))/totDt;
+					
+					// get the average velocity vectors over the two steps
+					let latAVel = (currVec.dlat + prevVec.dlat) / totDt;
+					let lonAVel = (currVec.dlon + prevVec.dlon) / totDt;
+					let hAVel = (currVec.dH + prevVec.dH) / totDt;
+					
+					// linear acceleration
+					let acceleration = Math.sqrt(latAcc**2 + lonAcc**2 + hAcc**2)
+					accelerations.push(acceleration);
+					
+					// now roll angle is based on a coordinate system along the average velocity vector
+					// one vector points to the left of the velocity vector
+					// Do we need a special case for when lat/lon velocity is zero?
+					
+					let avHVel = math.sqrt(latAVel**2 + lonAVel**2); // average horizontal velocity
+					let roll = 0;
+					if(avHVel > 1){
+						let leftVec = [-latAVel/avHVel,lonAVel/avHVel,0]; // this should be a unit vector
+						
+						let upVec = math.cross([lonAVel,latAVel,hAVel],leftVec); 
+						let uvLen = Math.sqrt(upVec[0]**2 + upVec[1]**2 + upVec[2]**2);
+						upVec = [upVec[0]/uvLen, upVec[1]/uvLen, upVec[2]/uvLen];
+						
+						let accVec = [lonAcc,latAcc,hAcc+g]; // add in the force of gravity
+						// now get the horizontal and vertical dot products
+						let leftDot = math.dot(leftVec,accVec);
+						let upDot = math.dot(upVec,accVec);
+						roll = -Math.atan2(leftDot,upDot) *180/Math.PI;
+						// if I was being really smart I'd use this to measure the load factor and derive a pitch up angle
+					}
+					rolls.push(roll);
+					if (i % 500 === 0) await yieldToUI();
+				}
+					
 				await yieldToUI(() => statusText.textContent = 'Generating charts and debug info...');
 
-				// Step 8: Final setup (debug, globals, charts)
-				// After the main loop, smooth rolls (3-point average)
-				for (let i = 1; i < rolls.length - 1; i++) {
-					rolls[i] = (rolls[i-1] + rolls[i] + rolls[i+1]) / 3;
+                // now we need to tidy up the arrays
+				// velocities/headings and pitches are one element short
+				velocities.unshift(velocities[0]);
+				headings.unshift(headings[0]);
+				pitches.unshift(pitches[0]);
+				// rolls are acceleration based and two elements short
+				rolls.unshift(rolls[0]);
+				rolls.push(rolls.at(-1));
+
+                // apply the moving average to the rolls & pitches
+				const lowPassPitchWindowSec = parseFloat(document.getElementById('lowPassPitchWindow').value) || 0;
+				if (lowPassPitchWindowSec > 0) {
+					pitches = applyMovingAverageAngles(pitches, lowPassPitchWindowSec, timeStepSec);
 				}
+				const lowPassRollWindowSec = parseFloat(document.getElementById('lowPassRollWindow').value) || 0;
+				if (lowPassRollWindowSec > 0) {
+					rolls = applyMovingAverageAngles(rolls, lowPassRollWindowSec, timeStepSec);
+				}
+				const lowPassHeadingWindowSec = parseFloat(document.getElementById('lowPassHeadingWindow').value) || 0;
+				if (lowPassHeadingWindowSec > 0) {
+					headings = applyMovingAverageAngles(headings, lowPassHeadingWindowSec, timeStepSec,true);
+				}
+				
+
+				const rollRateLimit = parseFloat(document.getElementById('rollRateLimit').value) || 0;
+				if (rollRateLimit > 0) {
+					rolls = applyRollRateLimit(rolls, rollRateLimit, timeStepSec) 
+				}
+				
+				// Step 8: Final setup (debug, globals, charts)     
+
                 // Store for export
                 globalNewTimes = newTimes;
                 globalNewPoints = newTimes.map((t, i) => ({
@@ -927,9 +1576,9 @@
             let kml = `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
 <Folder>
-    <name>Smoothed N323VR Track</name>
+    <name>Smoothed Track</name>
     <Placemark>
-        <name>Smoothed N323VR</name>
+        <name>Smoothed</name>
         <Style>
             <LineStyle>
                 <color>ff1c1ae3</color>
@@ -958,7 +1607,7 @@
 
         function exportRawCSV() {
             if(!globalRawPoints) return alert("No data proceessed yet.");
-			let csv = "time,lon,lat,alt\n";
+			let csv = "time,lon,lat,alt,step,deltat,vel\n";
 			for (let i = 1; i < globalRawPoints.length; i++) {
 			    let point = globalRawPoints[i];
 				let prevPoint = globalRawPoints[i-1];
@@ -967,10 +1616,11 @@
 				let dLon = (point.lon - prevPoint.lon) *60 * Math.cos(point.lat * Math.PI/180);
 				let dv = Math.sqrt(dLat*dLat + dLon*dLon)
 				let v = 0;
+				let tStr = new Date(point.time).toISOString();
 				if(dt > 0){
 				    v = 3600000* dv / dt;
 				}
-			    csv += `${point.time},${point.lon},${point.lat},${point.alt},${dv},${dt},${v}\n`;
+			    csv += `${tStr},${point.lon},${point.lat},${point.alt},${dv},${dt},${v}\n`;
 			}
 			downloadKML(csv,'aircraft_raw_points.csv')
 		}
