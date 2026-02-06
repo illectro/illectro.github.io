@@ -863,8 +863,8 @@
 			for (let i = 0; i < data.length; i++) {
 				let sum = 0;
 				let count = 0;
-				const start = i - half;
-				const end =  i + half;
+				let start = i - half;
+				let end =  i + half;
 				// shrink the window at the start and end
 				if(anchor) {
 					if (start < 0) {
@@ -1690,5 +1690,6 @@
     </script>
 </body>
 </html>
+
 
 
