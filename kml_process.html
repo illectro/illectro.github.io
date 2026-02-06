@@ -863,18 +863,25 @@
 			for (let i = 0; i < data.length; i++) {
 				let sum = 0;
 				let count = 0;
-				const start = Math.max(0, i - half);
-				const end = Math.min(data.length - 1, i + half);
+				const start = i - half;
+				const end =  i + half;
+				// shrink the window at the start and end
+				if(anchor) {
+					if (start < 0) {
+						end += start;
+	                    start = 0;
+					} else if( end >= data.length) {  
+                        start += end - data.length + 1;  
+						end = data.length - 1;
+					}
+				}
 				for (let j = start; j <= end; j++) {
 					sum += data[j];
 					count++;
 				}
 				smoothed[i] = sum / count;
 			}
-			if(anchor) {
-			    smoothed[0] = data[0];
-				smoothed[data.length-1] = data[data.length-1]
-			}
+
 			return smoothed;
 		}
         
@@ -1683,4 +1690,5 @@
     </script>
 </body>
 </html>
+
 
