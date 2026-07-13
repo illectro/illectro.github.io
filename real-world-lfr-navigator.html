@@ -338,9 +338,16 @@
         // ==================== AUDIO ====================
         function initAudio() {
             if (audioCtx) return;
+            
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Force resume on iOS (very important)
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
 
             aOsc = audioCtx.createOscillator();
+            aOsc.type = 'sine';           // sine is more reliable on iOS
             aOsc.frequency.value = frequency;
             aGain = audioCtx.createGain();
             aGain.gain.value = 0;
@@ -348,16 +355,23 @@
             aOsc.start();
 
             nOsc = audioCtx.createOscillator();
+            nOsc.type = 'sine';
             nOsc.frequency.value = frequency;
             nGain = audioCtx.createGain();
             nGain.gain.value = 0;
             nOsc.connect(nGain).connect(audioCtx.destination);
             nOsc.start();
         }
+        
 
         function updateAudio(deltaMs, sig) {
             if (!audioCtx || !sig) return;
 
+            // Ensure context is running (iOS often suspends it)
+            if (audioCtx.state !== 'running') {
+                audioCtx.resume();
+            }
+            
             phase += deltaMs;
             const cycle = ditTime + dashTime + dashTime + ditTime;
             if (phase >= cycle) phase -= cycle;
@@ -374,8 +388,15 @@
             const targetN = nOn ? (sig.n * 0.55) : 0;
 
             const now = audioCtx.currentTime;
-            aGain.gain.setTargetAtTime(targetA, now, 0.012);
-            nGain.gain.setTargetAtTime(targetN, now, 0.012);
+            // Use setValueAtTime + linearRamp for smoother/more reliable iOS behavior
+            aGain.gain.cancelScheduledValues(now);
+            nGain.gain.cancelScheduledValues(now);
+            
+            aGain.gain.setValueAtTime(aGain.gain.value, now);
+            aGain.gain.linearRampToValueAtTime(targetA, now + 0.015);
+            
+            nGain.gain.setValueAtTime(nGain.gain.value, now);
+            nGain.gain.linearRampToValueAtTime(targetN, now + 0.015);
         }
 
         // ==================== GEOLOCATION ====================
