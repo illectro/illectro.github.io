@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Real-World LFR Navigator — Cone of Silence</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&amp;family=Inter:wght@400;600&amp;display=swap');
+        
+        body {
+            margin: 0;
+            background: #0a0a0a;
+            color: #0f0;
+            font-family: 'Roboto Mono', monospace;
+            font-size: 15px;
+            line-height: 1.4;
+        }
+        h1, h2 { font-family: 'Inter', system-ui, sans-serif; margin: 0 0 8px 0; }
+        .container { max-width: 1120px; margin: 0 auto; padding: 20px; }
+        .header { text-align: center; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 15px; }
+        .panel {
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+        label { display: block; font-size: 13px; color: #888; margin-bottom: 4px; }
+        input[type="number"], input[type="text"] {
+            width: 100%; background: #1a1a1a; border: 1px solid #444; color: #0f0;
+            padding: 8px; font-family: 'Roboto Mono', monospace; font-size: 15px; border-radius: 4px;
+        }
+        input[type="range"] { width: 100%; accent-color: #0f0; }
+        button {
+            background: #003300; color: #0f0; border: 2px solid #0f0; padding: 10px 18px;
+            font-family: 'Roboto Mono', monospace; font-size: 15px; cursor: pointer; border-radius: 4px;
+            transition: all 0.1s;
+        }
+        button:hover { background: #006600; }
+        button:active { transform: scale(0.98); }
+        .touch-button {
+            width: 110px; height: 110px; background: #003300; border: 4px solid #0f0;
+            border-radius: 50%; font-size: 42px; color: #0f0; display: flex; align-items: center;
+            justify-content: center; user-select: none; touch-action: manipulation;
+        }
+        .touch-button:active { background: #006600; transform: scale(0.92); }
+        canvas { background: #0a0a0a; border: 2px solid #0f0; display: block; margin: 0 auto; touch-action: none; }
+        .status {
+            font-size: 20px; font-weight: 700; padding: 12px; text-align: center;
+            border-radius: 6px; margin: 12px 0;
+        }
+        .status.onbeam { background: #003300; color: #0f0; }
+        .status.cone { background: #330000; color: #f66; }
+        .status.off { background: #222; color: #888; }
+        .status.test { background: #002244; color: #6cf; }
+        .readout { font-size: 15px; background: #1a1a1a; padding: 10px; border-radius: 4px; }
+        .readout div { margin: 3px 0; }
+        #instructions { font-size: 14px; max-width: 900px; margin: 20px auto; }
+        .warning { background: #3a2a00; border-left: 4px solid #f90; padding: 10px; font-size: 14px; }
+        .row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+        .small { font-size: 12px; color: #888; }
+        .demo-btn { font-size: 13px; padding: 6px 12px; margin-top: 6px; }
+        .quick-btn { font-size: 12px; padding: 4px 10px; margin: 2px; }
+        .test-active {
+            border: 2px solid #6cf;
+            background: #001a33;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Real-World LFR Navigator</h1>
+            <p style="margin:8px 0 0 0; color:#888;">A-N Radio Range with Cone of Silence • GPS or Manual Position • Scalable (field → aircraft)</p>
+        </div>
+
+        <!-- Status -->
+        <div id="status" class="status off">Status: Ready — Click START or use Desktop Test Mode below</div>
+
+        <!-- Main visual + controls -->
+        <div class="grid">
+            <!-- Canvas -->
+            <div>
+                <canvas id="canvas" width="620" height="620"></canvas>
+                <div style="text-align:center; margin-top:8px; font-size:13px; color:#666;">
+                    Top-down view • Beacon at center • Yellow = beams • Dashed red = cone of silence footprint
+                </div>
+            </div>
+
+            <!-- Live Readouts -->
+            <div class="panel">
+                <h2 style="margin-bottom:12px;">Live Telemetry</h2>
+                <div class="readout">
+                    <div><strong>Horizontal distance:</strong> <span id="dist">—</span> m</div>
+                    <div><strong>Height above beacon:</strong> <span id="height">—</span> m</div>
+                    <div><strong>Slant range:</strong> <span id="slant">—</span> m</div>
+                    <div><strong>Angle from vertical:</strong> <span id="angle">—</span>°</div>
+                    <div><strong>Bearing from beacon:</strong> <span id="bearing">—</span>°</div>
+                    <div style="margin-top:8px; border-top:1px solid #333; padding-top:8px;">
+                        <strong>A intensity:</strong> <span id="aInt">0.00</span><br>
+                        <strong>N intensity:</strong> <span id="nInt">0.00</span><br>
+                        <strong>Total volume:</strong> <span id="vol">0.00</span>
+                    </div>
+                </div>
+                
+                <div style="margin-top:16px; padding-top:12px; border-top:1px solid #333;">
+                    <div style="font-size:13px; color:#888; margin-bottom:6px;">Quick test position offsets (relative to beacon)</div>
+                    <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                        <button class="quick-btn" onclick="moveTestPosition(0, 200)">N +200m</button>
+                        <button class="quick-btn" onclick="moveTestPosition(0, -200)">S +200m</button>
+                        <button class="quick-btn" onclick="moveTestPosition(200, 0)">E +200m</button>
+                        <button class="quick-btn" onclick="moveTestPosition(-200, 0)">W +200m</button>
+                        <button class="quick-btn" onclick="moveTestPosition(0, 500)">N +500m</button>
+                        <button class="quick-btn" onclick="resetTestToBeacon()">Reset to beacon</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Desktop Test Position (most important for desktop users) -->
+        <div class="panel test-active" id="testPanel">
+            <h2 style="color:#6cf;">🖥️ Desktop Test Position (Manual Simulation)</h2>
+            <p class="small" style="margin-top:-8px; margin-bottom:12px;">Type coordinates below or use the quick offset buttons. No need to click Apply — it updates live.</p>
+            
+            <div class="row">
+                <div style="flex:1;">
+                    <label>Your Test Latitude</label>
+                    <input type="number" id="testLat" placeholder="e.g. 37.7767" step="0.00001" value="">
+                </div>
+                <div style="flex:1;">
+                    <label>Your Test Longitude</label>
+                    <input type="number" id="testLon" placeholder="e.g. -122.4194" step="0.00001" value="">
+                </div>
+            </div>
+            
+            <div style="margin-top:10px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                <button onclick="activateTestPosition()" style="background:#003366; border-color:#6cf;">Activate / Update Test Position</button>
+                <button onclick="loadDemoTestPosition()" class="demo-btn" style="background:#003300;">Load Demo (~200m North of beacon)</button>
+                <span id="testModeIndicator" style="font-size:13px; color:#6cf; display:none;">✓ TEST MODE ACTIVE</span>
+            </div>
+            <div class="small">Tip: Set beacon altitude negative (e.g. -25) for ground testing. Use manual altitude ~2–5 m.</div>
+        </div>
+
+        <!-- Beacon Setup -->
+        <div class="panel">
+            <h2>Beacon Setup</h2>
+            <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
+                <div>
+                    <label>Beacon Latitude</label>
+                    <input type="number" id="beaconLat" value="37.7749" step="0.00001">
+                </div>
+                <div>
+                    <label>Beacon Longitude</label>
+                    <input type="number" id="beaconLon" value="-122.4194" step="0.00001">
+                </div>
+                <div>
+                    <label>Beacon Altitude (m) <span class="small">— negative = below ground for field testing</span></label>
+                    <input type="number" id="beaconAlt" value="-25" step="1">
+                </div>
+                <div>
+                    <label>Reference Bearing (°) <span class="small">— rotates all four beams (0° = N/S/E/W)</span></label>
+                    <input type="number" id="refBearing" value="0" step="1">
+                </div>
+            </div>
+            <div style="margin-top:12px;">
+                <button onclick="useCurrentAsBeacon()">📍 Use My Current Location as Beacon</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>Signal &amp; Cone Parameters</h2>
+            <div class="grid">
+                <div>
+                    <label>Max Usable Slant Range (m)</label>
+                    <input type="number" id="maxRange" value="8000" step="100">
+                    <div class="small">Field/walking: 150–600 m &nbsp;|&nbsp; Aircraft: 20,000–100,000 m</div>
+                </div>
+                <div>
+                    <label>Cone of Silence Half-Angle (°) from vertical</label>
+                    <input type="range" id="coneAngle" min="5" max="60" step="1" value="28">
+                    <div style="display:flex; justify-content:space-between; font-size:12px;">
+                        <span>5° (narrow)</span> <span id="coneVal">28°</span> <span>60° (wide)</span>
+                    </div>
+                </div>
+                <div>
+                    <label>My Altitude Mode</label>
+                    <div style="display:flex; gap:12px; align-items:center; margin:6px 0;">
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input type="checkbox" id="useGPSAlt" checked> Use GPS altitude when available
+                        </label>
+                    </div>
+                    <label>Manual Altitude Override (m MSL)</label>
+                    <input type="number" id="manualAlt" value="5" step="1">
+                    <div class="small">For field testing: beacon alt = -25 to -40, manual alt = 2 to 8 m</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Audio start -->
+        <div style="text-align:center; margin:20px 0;">
+            <button id="startBtn" onclick="startEverything()" style="font-size:18px; padding:14px 32px;">
+                ▶ START AUDIO + LOCATION TRACKING
+            </button>
+            <div class="small" style="margin-top:8px;">Click/tap once to enable audio (browser requirement). On iOS enable Precise Location for the browser.</div>
+        </div>
+
+        <div id="instructions" class="panel">
+            <h2 style="margin-bottom:10px;">How to Use</h2>
+            <ol style="padding-left:20px; margin:0;">
+                <li><strong>Desktop testing (recommended first step):</strong> Click <strong>"Load Demo (~200m North)"</strong> in the blue test panel above, then click <strong>START AUDIO</strong>. You should hear sound immediately and see telemetry update.</li>
+                <li>Use the <strong>quick offset buttons</strong> (N/S/E/W) to move your test position around the beacon and hear how the A/N signals change.</li>
+                <li><strong>iOS / real GPS:</strong> Tap START, allow location, then walk or drive. Make sure Precise Location is enabled in Settings → Privacy → Location Services → [Browser].</li>
+                <li>Adjust <strong>beacon altitude</strong> (negative for ground tests), <strong>max range</strong>, and <strong>cone angle</strong> live — everything updates in real time.</li>
+                <li><strong>Cone of Silence:</strong> When you are nearly overhead (within the cone angle), volume fades to zero. This is the classic station passage cue.</li>
+                <li><strong>Steady tone:</strong> When you are on one of the four beams, A and N overlap perfectly → continuous tone with no gaps.</li>
+            </ol>
+            <p style="margin-top:12px; color:#f90;"><strong>Note:</strong> Phone GPS altitude is often inaccurate (±10–30 m). For real aircraft use, feed better altitude data if possible.</p>
+        </div>
+    </div>
+
+    <script>
+        // ==================== CONFIG & STATE ====================
+        let audioCtx = null;
+        let aOsc = null, aGain = null;
+        let nOsc = null, nGain = null;
+        const frequency = 1020;
+        const wpm = 10;
+        const ditTime = 1200 / wpm;
+        const dashTime = 3 * ditTime;
+        const elementGap = ditTime;
+        const letterGap = dashTime;
+
+        let lastUpdate = 0;
+        let phase = 0;
+
+        let currentPosition = null;
+        let useTestPosition = false;
+        let testPosition = null;
+        let everythingStarted = false;
+        let watchId = null;
+
+        // ==================== GEODESY ====================
+        function haversine(lat1, lon1, lat2, lon2) {
+            const R = 6371000;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2)**2 +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon/2)**2;
+            return 2 * R * Math.asin(Math.sqrt(a));
+        }
+
+        function bearing(lat1, lon1, lat2, lon2) {
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const lat1r = lat1 * Math.PI / 180;
+            const lat2r = lat2 * Math.PI / 180;
+            const y = Math.sin(dLon) * Math.cos(lat2r);
+            const x = Math.cos(lat1r) * Math.sin(lat2r) -
+                      Math.sin(lat1r) * Math.cos(lat2r) * Math.cos(dLon);
+            let brng = Math.atan2(y, x) * 180 / Math.PI;
+            return (brng + 360) % 360;
+        }
+
+        // ==================== SIGNAL COMPUTATION ====================
+        function getCurrentUserPosition() {
+            if (useTestPosition && testPosition) {
+                return {
+                    lat: testPosition.lat,
+                    lon: testPosition.lon,
+                    alt: parseFloat(document.getElementById('manualAlt').value) || 5
+                };
+            }
+            if (!currentPosition) return null;
+            
+            const useGPS = document.getElementById('useGPSAlt').checked;
+            let alt = parseFloat(document.getElementById('manualAlt').value) || 5;
+            if (useGPS && currentPosition.alt != null && isFinite(currentPosition.alt)) {
+                alt = currentPosition.alt;
+            }
+            return {
+                lat: currentPosition.lat,
+                lon: currentPosition.lon,
+                alt: alt
+            };
+        }
+
+        function computeSignal(user, beacon) {
+            if (!user || !beacon) return null;
+
+            const d_h = haversine(beacon.lat, beacon.lon, user.lat, user.lon);
+            const h = user.alt - beacon.alt;
+            const r = Math.hypot(d_h, h);
+
+            let theta = 90;
+            if (Math.abs(h) > 0.5) {
+                theta = Math.atan(d_h / Math.abs(h)) * 180 / Math.PI;
+            }
+
+            const coneHalf = parseFloat(document.getElementById('coneAngle').value) || 28;
+            let coneFactor = Math.max(0, Math.min(1, theta / coneHalf));
+            coneFactor = coneFactor * coneFactor * (3 - 2 * coneFactor);
+
+            const maxR = parseFloat(document.getElementById('maxRange').value) || 8000;
+            let rangeFactor = 0;
+            if (r < maxR && maxR > 0) {
+                rangeFactor = Math.max(0, 1 - Math.pow(r / maxR, 1.7));
+            }
+
+            const brng = bearing(beacon.lat, beacon.lon, user.lat, user.lon);
+            const refBrng = parseFloat(document.getElementById('refBearing').value) || 0;
+            const relBrng = (brng - refBrng + 360) % 360;
+
+
+            let aInt, nInt;
+            aInt = Math.abs(Math.sin(relBrng * Math.PI / 180));
+            nInt = Math.abs(Math.cos(relBrng * Math.PI / 180));
+
+            const totalVol = coneFactor * rangeFactor;
+
+            return {
+                a: aInt * totalVol,
+                n: nInt * totalVol,
+                totalVol: totalVol,
+                inCone: coneFactor < 0.12,
+                slantRange: r,
+                heightDiff: h,
+                horizDist: d_h,
+                angleFromVertical: theta,
+                bearingFromBeacon: brng,
+                onBeam:  Math.abs(aInt-nInt) < 0.01,
+                coneFactor: coneFactor,
+                rangeFactor: rangeFactor,
+                maxRange: maxR
+            };
+        }
+
+        // ==================== AUDIO ====================
+        function initAudio() {
+            if (audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+            aOsc = audioCtx.createOscillator();
+            aOsc.frequency.value = frequency;
+            aGain = audioCtx.createGain();
+            aGain.gain.value = 0;
+            aOsc.connect(aGain).connect(audioCtx.destination);
+            aOsc.start();
+
+            nOsc = audioCtx.createOscillator();
+            nOsc.frequency.value = frequency;
+            nGain = audioCtx.createGain();
+            nGain.gain.value = 0;
+            nOsc.connect(nGain).connect(audioCtx.destination);
+            nOsc.start();
+        }
+
+        function updateAudio(deltaMs, sig) {
+            if (!audioCtx || !sig) return;
+
+            phase += deltaMs;
+            const cycle = ditTime + dashTime + dashTime + ditTime;
+            if (phase >= cycle) phase -= cycle;
+
+            let t = phase;
+
+            let aOn = false;
+            if (t >= 0 && t < ditTime) aOn = true;
+            if (t >= (ditTime+dashTime) && t < (ditTime+2*dashTime)) aOn = true;
+
+            let nOn = !aOn;
+
+            const targetA = aOn ? (sig.a * 0.55) : 0;
+            const targetN = nOn ? (sig.n * 0.55) : 0;
+
+            const now = audioCtx.currentTime;
+            aGain.gain.setTargetAtTime(targetA, now, 0.012);
+            nGain.gain.setTargetAtTime(targetN, now, 0.012);
+        }
+
+        // ==================== GEOLOCATION ====================
+        function startLocationTracking() {
+            if (watchId) navigator.geolocation.clearWatch(watchId);
+
+            const options = {
+                enableHighAccuracy: true,
+                timeout: 8000,
+                maximumAge: 2000
+            };
+
+            watchId = navigator.geolocation.watchPosition(
+                (pos) => {
+                    currentPosition = {
+                        lat: pos.coords.latitude,
+                        lon: pos.coords.longitude,
+                        alt: pos.coords.altitude,
+                        accuracy: pos.coords.accuracy,
+                        altAccuracy: pos.coords.altitudeAccuracy
+                    };
+                    if (!useTestPosition) {
+                        const status = document.getElementById('status');
+                        status.textContent = `GPS: ±${Math.round(currentPosition.accuracy)}m horiz` + 
+                            (currentPosition.alt != null ? ` | alt ±${Math.round(currentPosition.altAccuracy||0)}m` : '');
+                        status.className = 'status off';
+                    }
+                },
+                (err) => {
+                    console.warn('Geolocation error:', err);
+                    const status = document.getElementById('status');
+                    if (err.code === 1) {
+                        status.innerHTML = 'Location permission denied.<br>Please allow Precise Location in browser/OS settings.';
+                        status.className = 'status cone';
+                    } else {
+                        status.textContent = 'GPS error: ' + err.message;
+                    }
+                },
+                options
+            );
+        }
+
+        function useCurrentAsBeacon() {
+            const user = getCurrentUserPosition();
+            if (!user) {
+                alert('No location available yet. Start tracking or activate a test position first.');
+                return;
+            }
+            document.getElementById('beaconLat').value = user.lat.toFixed(6);
+            document.getElementById('beaconLon').value = user.lon.toFixed(6);
+        }
+
+        // ==================== TEST POSITION HANDLING (IMPROVED) ====================
+        function activateTestPosition() {
+            const lat = parseFloat(document.getElementById('testLat').value);
+            const lon = parseFloat(document.getElementById('testLon').value);
+            
+            if (isFinite(lat) && isFinite(lon)) {
+                useTestPosition = true;
+                testPosition = { lat, lon };
+                
+                if (!everythingStarted) {
+                    startEverything();
+                }
+                
+                document.getElementById('testModeIndicator').style.display = 'inline';
+                document.getElementById('status').textContent = 'TEST MODE — Using manual position (no real GPS)';
+                document.getElementById('status').className = 'status test';
+            } else {
+                alert('Please enter valid numbers for both latitude and longitude.');
+            }
+        }
+
+        function loadDemoTestPosition() {
+            const beaconLat = parseFloat(document.getElementById('beaconLat').value) || 37.7749;
+            const beaconLon = parseFloat(document.getElementById('beaconLon').value) || -122.4194;
+            
+            // ~200m north
+            const testLat = beaconLat + 0.0018;
+            const testLon = beaconLon;
+            
+            document.getElementById('testLat').value = testLat.toFixed(6);
+            document.getElementById('testLon').value = testLon.toFixed(6);
+            
+            useTestPosition = true;
+            testPosition = { lat: testLat, lon: testLon };
+            
+            document.getElementById('testModeIndicator').style.display = 'inline';
+            
+            if (!everythingStarted) {
+                startEverything();
+            } else {
+                document.getElementById('status').textContent = 'TEST MODE — Demo position loaded (~200m north of beacon)';
+                document.getElementById('status').className = 'status test';
+            }
+        }
+
+        function moveTestPosition(deltaLonMeters, deltaLatMeters) {
+            if (!useTestPosition || !testPosition) {
+                // If no test position yet, create one near the beacon
+                const beaconLat = parseFloat(document.getElementById('beaconLat').value) || 37.7749;
+                const beaconLon = parseFloat(document.getElementById('beaconLon').value) || -122.4194;
+                testPosition = { lat: beaconLat, lon: beaconLon };
+                useTestPosition = true;
+            }
+            
+            // Approximate conversion (good enough for small distances)
+            const latPerMeter = 1 / 111320;
+            const lonPerMeter = 1 / (111320 * Math.cos(testPosition.lat * Math.PI / 180));
+            
+            testPosition.lat += deltaLatMeters * latPerMeter;
+            testPosition.lon += deltaLonMeters * lonPerMeter;
+            
+            // Update the input fields so they stay in sync
+            document.getElementById('testLat').value = testPosition.lat.toFixed(6);
+            document.getElementById('testLon').value = testPosition.lon.toFixed(6);
+            
+            document.getElementById('testModeIndicator').style.display = 'inline';
+            
+            if (!everythingStarted) {
+                startEverything();
+            } else {
+                document.getElementById('status').textContent = `TEST MODE — Moved to new test position`;
+                document.getElementById('status').className = 'status test';
+            }
+        }
+
+        function resetTestToBeacon() {
+            const beaconLat = parseFloat(document.getElementById('beaconLat').value) || 37.7749;
+            const beaconLon = parseFloat(document.getElementById('beaconLon').value) || -122.4194;
+            
+            document.getElementById('testLat').value = beaconLat.toFixed(6);
+            document.getElementById('testLon').value = beaconLon.toFixed(6);
+            
+            useTestPosition = true;
+            testPosition = { lat: beaconLat, lon: beaconLon };
+            
+            document.getElementById('testModeIndicator').style.display = 'inline';
+            
+            if (!everythingStarted) {
+                startEverything();
+            } else {
+                document.getElementById('status').textContent = 'TEST MODE — Reset to beacon location';
+                document.getElementById('status').className = 'status test';
+            }
+        }
+
+        // Make test position inputs live (update as you type)
+        function setupLiveTestInputs() {
+            const latInput = document.getElementById('testLat');
+            const lonInput = document.getElementById('testLon');
+            
+            let debounceTimer = null;
+            
+            function handleInput() {
+                clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => {
+                    const lat = parseFloat(latInput.value);
+                    const lon = parseFloat(lonInput.value);
+                    
+                    if (isFinite(lat) && isFinite(lon)) {
+                        useTestPosition = true;
+                        testPosition = { lat, lon };
+                        document.getElementById('testModeIndicator').style.display = 'inline';
+                        
+                        if (!everythingStarted) {
+                            startEverything();
+                        } else {
+                            document.getElementById('status').textContent = 'TEST MODE — Live position update';
+                            document.getElementById('status').className = 'status test';
+                        }
+                    }
+                }, 350); // debounce while typing
+            }
+            
+            latInput.addEventListener('input', handleInput);
+            lonInput.addEventListener('input', handleInput);
+            
+            // Also allow Enter key to force immediate update
+            latInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleInput(); });
+            lonInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleInput(); });
+        }
+
+        // ==================== RENDERING ====================
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { alpha: true });
+
+        function drawMap(user, beacon, sig) {
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (!user || !beacon) {
+                ctx.fillStyle = '#666';
+                ctx.font = '16px monospace';
+                ctx.fillText('Waiting for position...', 180, 300);
+                return;
+            }
+
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+
+            const d_h = sig ? sig.horizDist : 500;
+            let metersPerPixel = Math.max(3, d_h * 1.6 / (canvas.width / 2));
+            if (d_h < 30) metersPerPixel = 2;
+
+            const scale = 1 / metersPerPixel;
+
+            // Grid
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 1;
+            const gridStep = 50 * scale;
+            for (let x = cx % gridStep; x < canvas.width; x += gridStep) {
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.width); ctx.stroke();
+            }
+            for (let y = cy % gridStep; y < canvas.height; y += gridStep) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+            }
+
+            // Beacon
+            ctx.fillStyle = '#ff0';
+            ctx.beginPath();
+            ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Beams (4 yellow lines)
+            const refBrng = parseFloat(document.getElementById('refBearing').value) || 0;
+            ctx.strokeStyle = '#ff0';
+            ctx.lineWidth = 2.5;
+            for (let i = 0; i < 4; i++) {
+                const angle = (refBrng + i * 90) * Math.PI / 180;
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.lineTo(cx + Math.sin(angle) * 280, cy - Math.cos(angle) * 280);
+                ctx.stroke();
+            }
+
+            // Cone of silence footprint (dashed red circle)
+            if (sig && sig.horizDist < sig.maxRange * 1.5) {
+                const coneHalf = parseFloat(document.getElementById('coneAngle').value) || 28;
+                // Approximate ground radius of the cone
+                const coneGroundRadius = Math.abs(sig.heightDiff) * Math.tan(coneHalf * Math.PI / 180);
+                if (coneGroundRadius > 5) {
+                    ctx.strokeStyle = '#f66';
+                    ctx.setLineDash([6, 4]);
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, coneGroundRadius * scale, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+            }
+
+            // User position (cyan)
+            const userX = cx + (user.lon - beacon.lon) * scale * 111320 * Math.cos(beacon.lat * Math.PI / 180);
+            const userY = cy - (user.lat - beacon.lat) * scale * 111320;
+
+            ctx.fillStyle = '#0ff';
+            ctx.beginPath();
+            ctx.arc(userX, userY, 6, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Line from beacon to user
+            ctx.strokeStyle = '#0ff';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(userX, userY);
+            ctx.stroke();
+
+            // Distance label
+            if (sig) {
+                ctx.fillStyle = '#0ff';
+                ctx.font = '12px monospace';
+                ctx.fillText(Math.round(sig.horizDist) + 'm', userX + 10, userY - 8);
+            }
+        }
+
+        // ==================== MAIN LOOP ====================
+        function gameLoop(timestamp) {
+            if (!lastUpdate) lastUpdate = timestamp;
+            const deltaMs = timestamp - lastUpdate;
+            lastUpdate = timestamp;
+
+            const beacon = {
+                lat: parseFloat(document.getElementById('beaconLat').value),
+                lon: parseFloat(document.getElementById('beaconLon').value),
+                alt: parseFloat(document.getElementById('beaconAlt').value) || 0
+            };
+
+            const user = getCurrentUserPosition();
+            const sig = computeSignal(user, beacon);
+
+            // Audio
+            if (audioCtx && sig) {
+                updateAudio(deltaMs, sig);
+            }
+
+            // Telemetry
+            if (sig) {
+                document.getElementById('dist').textContent = Math.round(sig.horizDist);
+                document.getElementById('height').textContent = Math.round(sig.heightDiff);
+                document.getElementById('slant').textContent = Math.round(sig.slantRange);
+                document.getElementById('angle').textContent = sig.angleFromVertical.toFixed(1);
+                document.getElementById('bearing').textContent = sig.bearingFromBeacon.toFixed(0);
+                document.getElementById('aInt').textContent = sig.a.toFixed(2);
+                document.getElementById('nInt').textContent = sig.n.toFixed(2);
+                document.getElementById('vol').textContent = sig.totalVol.toFixed(2);
+
+                const statusEl = document.getElementById('status');
+                
+                if (!useTestPosition && currentPosition) {
+                    statusEl.textContent = `GPS: ±${Math.round(currentPosition.accuracy)}m horiz` + 
+                        (currentPosition.alt != null ? ` | alt ±${Math.round(currentPosition.altAccuracy||0)}m` : '');
+                    statusEl.className = 'status off';
+                }
+                
+                if (sig.totalVol < 0.01) {
+                    if (sig.horizDist > sig.maxRange * 0.9) {
+                        if (useTestPosition) {
+                            statusEl.textContent = `OUT OF RANGE — Test position too far (max ${Math.round(sig.maxRange)}m). Use quick offset buttons or reduce Max Range.`;
+                        } else {
+                            statusEl.textContent = `OUT OF RANGE — Move closer (max ${Math.round(sig.maxRange)}m)`;
+                        }
+                    } else {
+                        statusEl.textContent = 'CONE OF SILENCE — Signal fading (station passage)';
+                    }
+                    statusEl.className = 'status cone';
+                } else if (sig.inCone) {
+                    statusEl.textContent = 'CONE OF SILENCE — Signal fading (station passage)';
+                    statusEl.className = 'status cone';
+                } else if (sig.onBeam) {
+                    statusEl.textContent = 'STEADY TONE — On the beam ✓';
+                    statusEl.className = 'status onbeam';
+                } else {
+                    const dominant = sig.a > sig.n ? 'A (·—)' : 'N (—·)';
+                    statusEl.textContent = `Hearing mostly ${dominant} — Off course`;
+                    statusEl.className = 'status off';
+                }
+            } else {
+                if (!useTestPosition) {
+                    document.getElementById('status').textContent = 'Waiting for GPS position... (or use Desktop Test Mode above)';
+                    document.getElementById('status').className = 'status off';
+                }
+            }
+
+            drawMap(user, beacon, sig);
+
+            document.getElementById('coneVal').textContent = 
+                (parseFloat(document.getElementById('coneAngle').value) || 28) + '°';
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // ==================== INITIALIZATION ====================
+        function startEverything() {
+            initAudio();
+            
+            const btn = document.getElementById('startBtn');
+            btn.textContent = 'AUDIO & GPS RUNNING';
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+
+            everythingStarted = true;
+
+            if (!useTestPosition) {
+                startLocationTracking();
+            }
+
+            if (!document.getElementById('beaconLat').value) {
+                document.getElementById('beaconLat').value = '37.7749';
+                document.getElementById('beaconLon').value = '-122.4194';
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', e => {
+            if (e.key.toLowerCase() === 'r') {
+                useTestPosition = false;
+                testPosition = null;
+                document.getElementById('testModeIndicator').style.display = 'none';
+                document.getElementById('status').textContent = 'Switched back to real GPS';
+                document.getElementById('status').className = 'status off';
+            }
+            if (e.key.toLowerCase() === 'd') {
+                loadDemoTestPosition();
+            }
+            if (e.key.toLowerCase() === 'n') moveTestPosition(0, 200);
+            if (e.key.toLowerCase() === 's') moveTestPosition(0, -200);
+            if (e.key.toLowerCase() === 'e') moveTestPosition(200, 0);
+            if (e.key.toLowerCase() === 'w') moveTestPosition(-200, 0);
+        });
+
+        // Cone slider live update
+        document.getElementById('coneAngle').addEventListener('input', () => {
+            document.getElementById('coneVal').textContent = document.getElementById('coneAngle').value + '°';
+        });
+
+        // ==================== BOOT ====================
+        window.onload = () => {
+            // Pre-fill a sensible demo test position near the default beacon
+            const beaconLat = parseFloat(document.getElementById('beaconLat').value);
+            const beaconLon = parseFloat(document.getElementById('beaconLon').value);
+            document.getElementById('testLat').value = (beaconLat + 0.0018).toFixed(6);
+            document.getElementById('testLon').value = beaconLon.toFixed(6);
+            
+            setupLiveTestInputs();
+            
+            const status = document.getElementById('status');
+            status.innerHTML = 'Ready. <strong>Desktop:</strong> Click "Load Demo" in blue panel, then START. <strong>Mobile:</strong> Tap START and allow location.';
+            
+            // Start the rendering loop immediately (audio waits for user gesture)
+            requestAnimationFrame(gameLoop);
+        };
+
+        // Expose for debugging
+        window.LFR_DEBUG = { 
+            getCurrentUserPosition, 
+            computeSignal, 
+            haversine, 
+            bearing, 
+            loadDemoTestPosition,
+            activateTestPosition
+        };
+    </script>
+</body>
+</html>
