@@ -82,7 +82,7 @@
         <div class="grid">
             <!-- Canvas -->
             <div>
-                <canvas id="canvas" width="620" height="620"></canvas>
+                <canvas id="canvas" width="500" height="500"></canvas>
                 <div style="text-align:center; margin-top:8px; font-size:13px; color:#666;">
                     Top-down view • Beacon at center • Yellow = beams • Dashed red = cone of silence footprint
                 </div>
@@ -622,7 +622,7 @@
             ctx.strokeStyle = '#ff0';
             ctx.lineWidth = 2.5;
             for (let i = 0; i < 4; i++) {
-                const angle = (refBrng + i * 90) * Math.PI / 180;
+                const angle = (45 + refBrng + i * 90) * Math.PI / 180;
                 ctx.beginPath();
                 ctx.moveTo(cx, cy);
                 ctx.lineTo(cx + Math.sin(angle) * 280, cy - Math.cos(angle) * 280);
