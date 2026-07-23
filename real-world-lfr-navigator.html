@@ -311,7 +311,7 @@
 
             const brng = bearing(beacon.lat, beacon.lon, user.lat, user.lon);
             const refBrng = parseFloat(document.getElementById('refBearing').value) || 0;
-            const relBrng = (brng - refBrng + 360) % 360;
+            const relBrng = (45 + brng - refBrng + 360) % 360;
 
 
             let aInt, nInt;
@@ -622,7 +622,7 @@
             ctx.strokeStyle = '#ff0';
             ctx.lineWidth = 2.5;
             for (let i = 0; i < 4; i++) {
-                const angle = (45 + refBrng + i * 90) * Math.PI / 180;
+                const angle = (refBrng + i * 90) * Math.PI / 180;
                 ctx.beginPath();
                 ctx.moveTo(cx, cy);
                 ctx.lineTo(cx + Math.sin(angle) * 280, cy - Math.cos(angle) * 280);
