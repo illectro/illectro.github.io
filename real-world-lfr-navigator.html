@@ -374,14 +374,15 @@
             }
  
             phase += deltaMs;
-            const cycle = ditTime + dashTime + dashTime + ditTime;
+
+            const cycle = 2*ditTime + 2*dashTime;
             if (phase >= cycle) phase -= cycle;
 
             let t = phase;
 
             let aOn = false;
             if (t >= 0 && t < ditTime) aOn = true;
-            if (t >= (ditTime+dashTime) && t < (ditTime+2*dashTime)) aOn = true;
+            if (t >= (2*ditTime) && t < (2*ditTime+dashTime)) aOn = true;
 
             // nOn is the logical complement — this is what creates the continuous tone on-beam
             const activeIntensity = aOn ? sig.a : sig.n;
