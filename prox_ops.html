@@ -30,7 +30,8 @@
         const pyEl = document.getElementById('playerY');
         const pvxEl = document.getElementById('playerVX');
         const pvyEl = document.getElementById('playerVY');
-        const positions = []
+        const positions = [];
+        const trajectory = [];
        
 
         // Game parameters
@@ -41,11 +42,11 @@
         let playerVY = 0;
         let playerHeading = 40;  // Degrees, 0 = north, 90 = east, etc.
         let turnRate = 5;         // Degrees per frame when turning
-        let thrust = 0.01;            // Units per frame
+        let thrust = 0.0001;            // Units per frame
         let fuel = 100;
-        let fuelRate = 0.1;      // % per frame while firing
+        let fuelRate = 0.01;      // % per frame while firing
         let difficulty = 0;
-        let pause = 100;
+        let pause = 0;
         
         let timer = 0;
 
@@ -58,8 +59,10 @@
             difficulty = diff;
             if(difficulty == 0) {
                 // standard start position
-                playerX = 50;          // Player position relative to beacon (beacon at 0,0)
-                playerY = -20;       // Start south of beacon
+                playerX = 500;          // Player position relative to beacon (beacon at 0,0)
+                playerY = -50;       // Start south of beacon
+                playerVX = 1.5*n_param*playerY; 
+                playerVY = 0;
                 playerHeading = 40;  // Degrees, 0 = north, 90 = east, etc.
             } else {
                 // random start position
@@ -73,13 +76,35 @@
                 }
             }
             fuel = 100;
-            pause = 100;
+            pause = 0;
+            positions.length = 0;
+            positions.push([ playerX, playerY ]);
+        }
+
+        function recalculate_traj() {
+            trajectory.length = 0;
+            let simX = playerX;
+            let simY = playerY;
+            let simVX = playerVX;
+            let simVY = playerVY;
+
+            for(let i=0; i<10000; i++) {
+                trajectory.push([ simX, simY, simVX, simVY ]);
+
+                // Movement Note that X & Y are swapped from CW equations
+                simVX += 2*n_param*simVY
+                simVY += 3*n_param*n_param * simY - 2*n_param*simVX
+
+                simX += simVX
+                simY += simVY
+            }
         }
 
         // Controls
         const keys = {};
         window.addEventListener('keydown', e => { keys[e.key] = true; });
         window.addEventListener('keyup', e => { keys[e.key] = false; });
+        resetState(difficulty);
 
         function gameLoop(timestamp) {
             if (!lastUpdate) lastUpdate = timestamp;
@@ -93,6 +118,7 @@
             if (keys['ArrowLeft'] || keys['a'] || keys['A']) playerHeading += turnRate;
             if (keys['ArrowRight'] || keys['d'] || keys['D']) playerHeading -= turnRate;
             if (keys['ArrowUp']  || keys['w'] || keys['W']) accel = thrust;
+            if (keys['Escape']) {resetState(difficulty); keys['Escape'] = false;}
 
 
             // x key switches to practice mode
@@ -144,13 +170,15 @@
                 return;
             }
             // update trail
-            if(phase > 2000) {
-                phase -= 2000;
+            if(phase > 200) {
+                phase -= 200;
                 positions.push([ playerX, playerY ]);
-                if(positions.length > 50) {
+                if(positions.length > 2000) {
                     positions.shift()
                 }
             }
+            // update trajectory
+            recalculate_traj();
 
             // Rendering
             ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -192,17 +220,26 @@
             ctx.lineTo(cx + 100 * Math.cos(3*Math.PI/2), cy + 100 * Math.sin(3*Math.PI/2));
             ctx.stroke();
 
+            // Draw positions
+            ctx.strokeStyle = '#dd2222';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(cx - positions[0][0], cy - positions[0][1]);
             for (let i = 0; i < positions.length; i++) {
-                const pos = positions[i];
-        
-                // Calculate a radius that fades out (optional, creates a tapered end)
-                const radius = (i / positions.length) * 5; 
-
-                ctx.beginPath();
-                ctx.arc(cx - pos[0], cy - pos[1], radius, 0, Math.PI * 2, false);
-                ctx.fillStyle = '#dd2222'; // Black dots
-                ctx.fill();
+                ctx.lineTo(cx - positions[i][0], cy - positions[i][1]);
             }
+            ctx.lineTo(cx - playerX, cy - playerY);
+            ctx.stroke();
+
+            // Draw trajectory
+            ctx.strokeStyle = '#d6edff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(cx - trajectory[0][0], cy - trajectory[0][1]);
+            for (let i = 0; i < trajectory.length; i += 10) {
+                ctx.lineTo(cx - trajectory[i][0], cy - trajectory[i][1]);
+            }
+            ctx.stroke();
 
             // Player spacecraft (simple triangle)
             ctx.save();
